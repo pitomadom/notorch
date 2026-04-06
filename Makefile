@@ -55,6 +55,11 @@ infer: infer_janus.c notorch.c notorch.h
 	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o infer_janus_nt infer_janus.c notorch.c -lm
 	@echo "Compiled: infer_janus_nt (Janus RRPRAM, $(BLAS_NAME))"
 
+# Gemma-3 inference via GGUF
+gemma: infer_gemma.c gguf.c gguf.h notorch.c notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o infer_gemma infer_gemma.c gguf.c notorch.c -lm
+	@echo "Compiled: infer_gemma (Gemma-3 GGUF, $(BLAS_NAME))"
+
 test: notorch_test
 	./notorch_test
 
