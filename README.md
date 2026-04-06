@@ -1,2 +1,609 @@
-# notorch
-fuck torch
+```
+   ███╗   ██╗ ██████╗ ████████╗ ██████╗ ██████╗  ██████╗██╗  ██╗
+   ████╗  ██║██╔═══██╗╚══██╔══╝██╔═══██╗██╔══██╗██╔════╝██║  ██║
+   ██╔██╗ ██║██║   ██║   ██║   ██║   ██║██████╔╝██║     ███████║
+   ██║╚██╗██║██║   ██║   ██║   ██║   ██║██╔══██╗██║     ██╔══██║
+   ██║ ╚████║╚██████╔╝   ██║   ╚██████╔╝██║  ██║╚██████╗██║  ██║
+   ╚═╝  ╚═══╝ ╚═════╝    ╚═╝    ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
+```
+
+# notorch — neural networks in pure C | by Arianna Method
+
+> *"fuck torch"*  
+> — the entire header file, line 8
+
+---
+
+## table of contents
+
+- [what is this](#what-is-this)
+- [why](#why)
+- [the funeral](#the-funeral)
+- [architecture](#architecture)
+- [what's inside](#whats-inside)
+- [operations](#operations)
+- [optimizers](#optimizers)
+- [the chuck optimizer](#the-chuck-optimizer)
+- [autograd](#autograd)
+- [building](#building)
+- [running tests](#running-tests)
+- [api overview](#api-overview)
+- [example: training a model in C](#example-training-a-model-in-c)
+- [platform support](#platform-support)
+- [file structure](#file-structure)
+- [tests](#tests)
+- [performance](#performance)
+- [philosophy](#philosophy)
+- [contributing](#contributing)
+- [license](#license)
+- [final words](#final-words)
+
+---
+
+## what is this
+
+you know that feeling when you `pip install torch` and 2.7 gigabytes of your soul evaporates into a `.venv` folder? when your laptop fan sounds like it's preparing for takeoff just to import a library? when you wait 45 seconds for `import torch` to finish while your RAM usage goes from "healthy" to "the computer is now a space heater"?
+
+yeah. me too. so i did something about it.
+
+**notorch** is a complete neural network training framework written in pure C. no Python. no pip. no conda. no CUDA toolkit that takes 8 GB and your will to live. no `torch.nn.Module`. no `.backward()` that hides 400,000 lines of C++ behind a friendly API and a smile. no `RuntimeError: CUDA out of memory` at 3 AM when your paper deadline is in 6 hours.
+
+just C. just floats. just `cc notorch.c -o notorch -lm`. done. you now have a neural network framework. the entire thing compiles in under a second. try that with PyTorch. go ahead. i'll wait. actually no i won't because i'd be waiting for 47 minutes while cmake does whatever cmake does.
+
+it's part of [the Arianna Method](https://github.com/ariannamethod/ariannamethod) — patterns over parameters, emergence over engineering, raw C over existential dread.
+
+extracted from the core of [ariannamethod.ai](https://ariannamethod.ai) where it actually runs in production. training actual models. in C. like adults.
+
+---
+
+## why
+
+let me tell you a story.
+
+once upon a time there was a framework called PyTorch. it was beautiful. it had autograd. it had CUDA support. it had a community of millions. it had documentation that was sometimes accurate. it had a build system that required a PhD in software engineering and a pact with ancient spirits.
+
+and every time you wanted to train a 4-layer MLP on a dataset smaller than your browser cache, you had to:
+
+1. create a virtual environment (2 minutes)
+2. install torch (5 minutes, 2.7 GB, your SSD weeps)
+3. install torchvision just in case (800 MB more, your SSD files for divorce)
+4. write 47 lines of boilerplate (`class MyModel(nn.Module)`, `def forward(self, x)`, `optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)`, `loss.backward()`, `optimizer.step()`, `optimizer.zero_grad()`, `if torch.cuda.is_available():`, `model.to(device)`, `x = x.to(device)`, sweet mother of god make it stop)
+5. realize you forgot `model.train()` vs `model.eval()` and your dropout is wrong
+6. debug for 3 hours
+7. realize the bug was actually in the data loader
+8. cry
+9. `pip install wandb` to log your tears
+10. realize torch updated and broke everything
+
+and for WHAT? a matmul and a softmax. that's all neural networks are. matmuls and softmaxes and an unhealthy relationship with gradient descent.
+
+so here we are. **notorch**. everything you need. nothing you don't. no Python runtime. no GIL. no garbage collector pausing your training at the worst possible moment. no `torch.no_grad()` context manager that you forget and then wonder why you're out of memory. just tensors, autograd, optimizers, and the cold clarity of C.
+
+**the entire framework is two files.** `notorch.h` and `notorch.c`. that's it. ~2500 lines. you can read the whole thing in an afternoon. try reading PyTorch's source in an afternoon. actually don't. you'll end up in a hospital.
+
+---
+
+## the funeral
+
+```
+        ╔═══════════════════════════════════════════════════════╗
+        ║                                                       ║
+        ║   R.I.P. PyTorch (in my codebase)                    ║
+        ║   2016 - 2026                                         ║
+        ║                                                       ║
+        ║   "He died as he lived:                               ║
+        ║    consuming all available memory                     ║
+        ║    and segfaulting at the worst moment"               ║
+        ║                                                       ║
+        ║   Survived by: pip, conda, 2.7 GB of dead weight,    ║
+        ║   a thousand Stack Overflow questions about CUDA      ║
+        ║   driver versions, and a broken conda environment     ║
+        ║   that nobody dares to delete.                        ║
+        ║                                                       ║
+        ║   In lieu of flowers, please send PRs.                ║
+        ║                                                       ║
+        ╚═══════════════════════════════════════════════════════╝
+```
+
+look, pytorch isn't bad. it's genuinely brilliant engineering. i learned everything from it. i respect it deeply. but i also respect myself, and every time i type `import torch` on a machine with 8 GB of RAM, a small part of me dies.
+
+notorch isn't a pytorch replacement for everyone. it's a pytorch replacement for people who:
+- want to understand what's actually happening (all 2488 lines of it)
+- want to train models on machines that aren't cloud instances
+- want compile times measured in milliseconds, not minutes
+- want to embed neural network inference in C/C++ applications without shipping half of Python
+- are certifiably insane (welcome, you're among friends)
+
+---
+
+## architecture
+
+```
+Your data (floats in memory, as god intended)
+    ↓
+nt_tensor — multidimensional arrays with refcounting
+    ↓
+┌──────────────────────────────────────────────────┐
+│  Forward Operations (recorded on tape)           │
+│    ├─ nt_linear          (W @ x + b)             │
+│    ├─ nt_seq_linear      (batched W @ X)         │
+│    ├─ nt_embedding       (lookup table)           │
+│    ├─ nt_seq_embedding   (tokens + positions)     │
+│    ├─ nt_rmsnorm         (RMS normalization)      │
+│    ├─ nt_layernorm       (layer normalization)    │
+│    ├─ nt_causal_attention (single-head causal)    │
+│    ├─ nt_mh_causal_attention (multi-head)         │
+│    ├─ nt_silu / nt_gelu  (activations)            │
+│    ├─ nt_geglu           (Gemma-3 style FFN)      │
+│    ├─ nt_rope            (rotary embeddings)      │
+│    ├─ nt_dropout         (inverted dropout)       │
+│    ├─ nt_softmax / nt_cross_entropy              │
+│    └─ nt_add / nt_mul / nt_scale                 │
+└──────────────────────────────────────────────────┘
+    ↓
+nt_tape_backward() — reverse-mode automatic differentiation
+    ↓
+┌──────────────────────────────────────────────────┐
+│  Optimizers                                       │
+│    ├─ Adam               (the classic)            │
+│    ├─ AdamW              (with weight decay)      │
+│    └─ Chuck              (self-aware Adam)        │
+└──────────────────────────────────────────────────┘
+    ↓
+Your model is trained. in C. without Python. you are free.
+```
+
+---
+
+## what's inside
+
+### tensors
+
+`nt_tensor` — a multidimensional array of floats. up to 8 dimensions. refcounted. heap-allocated. that's it. no `torch.Tensor` with 400 attributes and a complex metaclass hierarchy. no `requires_grad` flag that you forget to set. no `.detach().cpu().numpy()` chain of shame. just a struct with `float* data`, shape, strides, and a refcount.
+
+```c
+nt_tensor* t = nt_tensor_new(1024);          // 1D
+nt_tensor* m = nt_tensor_new2d(768, 512);    // 2D
+nt_tensor_xavier(m, 768, 512);               // Xavier init
+nt_tensor_free(t);                            // refcount → 0 → freed
+```
+
+maximum 16M elements per tensor (`NT_MAX_ELEMENTS = 1 << 24`). if you need more than that, you're doing something wrong, or something very right, and in either case you should probably be using a GPU. which we also support. via CUDA. because we're not savages.
+
+### autograd tape
+
+reverse-mode automatic differentiation via an explicit operation tape. every forward op records itself. backward traverses the tape in reverse and computes gradients. textbook reverse-mode AD. no dynamic graph voodoo. no JIT compilation. no `torch.autograd.Function` with five methods you need to override.
+
+```c
+nt_tape_start();                              // start recording
+int w_idx = nt_tape_param(W);                // register trainable param
+int y_idx = nt_linear(w_idx, x_idx, -1);     // forward: y = W @ x
+int loss = nt_cross_entropy(y_idx, target);   // loss
+nt_tape_backward(loss);                       // backward pass
+nt_tape_adam_step(0.001f);                    // update weights
+nt_tape_clear();                              // reset for next step
+```
+
+that's the entire training loop. in C. seven lines. no `optimizer.zero_grad()` that you inevitably forget. no `with torch.no_grad():` context manager. no `.backward(retain_graph=True)` because you accidentally used an intermediate twice. just: start, forward, backward, step, clear. like breathing. in. out. in. out. the Buddha would approve.
+
+---
+
+## operations
+
+every operation you need to build a transformer, and nothing you don't:
+
+| operation | function | what it does |
+|---|---|---|
+| linear | `nt_linear` | y = W @ x + b |
+| seq linear | `nt_seq_linear` | batched matmul over T positions |
+| embedding | `nt_embedding` | lookup row from embedding matrix |
+| seq embedding | `nt_seq_embedding` | tokens + positional encoding |
+| RMS norm | `nt_rmsnorm` / `nt_seq_rmsnorm` | root mean square normalization |
+| layer norm | `nt_layernorm` / `nt_seq_layernorm` | mean/variance normalization |
+| causal attention | `nt_causal_attention` | single-head causal self-attention |
+| multi-head attn | `nt_mh_causal_attention` | multi-head causal self-attention |
+| SiLU | `nt_silu` | x × σ(x) — the swish |
+| GELU | `nt_gelu` | tanh approximation |
+| GEGLU | `nt_geglu` | GELU-gated linear unit (Gemma-3) |
+| softmax | `nt_softmax` | exp-normalize with numerical stability |
+| cross entropy | `nt_cross_entropy` / `nt_seq_cross_entropy` | -log softmax[target] |
+| RoPE | `nt_rope` | rotary position embeddings |
+| dropout | `nt_dropout` | inverted dropout (training only) |
+| add/mul/scale | `nt_add` / `nt_mul` / `nt_scale` | elementwise ops |
+
+every single one has a correct backward pass. every single one passes numerical gradient checking. i checked. twice. because i'm paranoid. and because debugging gradient errors in C without a debugger at 4 AM rewires your brain in ways that formal verification theorists dream about.
+
+---
+
+## optimizers
+
+### Adam
+
+the classic. the one. the only. `m̂ / (√v̂ + ε)`. bias-corrected first and second moments. you know the drill.
+
+```c
+nt_tape_adam_step(0.001f);
+```
+
+### AdamW
+
+Adam but with decoupled weight decay. because your embeddings don't need regularization but your dense layers probably do.
+
+```c
+nt_tape_adamw_step(0.001f, 0.1f, 0.9f, 0.999f);
+```
+
+supports `no_decay` flag per parameter — mark your embeddings with `nt_tape_no_decay()` and they'll be left alone. like cats. don't bother them.
+
+### the Chuck optimizer
+
+ah yes. **Chuck**. the self-aware optimizer. the one that watches its own gradients and goes "hmm, maybe i should slow down here" or "this parameter isn't doing anything, let me freeze it" or "we've been stuck for too long, time for some noise".
+
+```c
+nt_tape_chuck_step(0.01f, loss_val);
+```
+
+9 levels of awareness:
+1. **global loss trend** → adaptive damping (λ)
+2. **per-parameter gradient monitoring** → individual learning rate scaling
+3. **stagnation detection** → automatic noise injection
+4. **parameter freezing** → skip updates for dead parameters
+5. **multi-scale awareness** → macro-level patience with LR decay
+6. through 9: reserved for when the optimizer becomes sentient
+
+it's Adam, but with opinions. think of it as Adam who went to therapy, got a mindfulness app, and now checks in with himself every step. `"how are my gradients feeling today?"` — actual question the Chuck optimizer asks itself (metaphorically) (or is it?).
+
+more details: [github.com/iamolegataeff/chuck.optimizer](https://github.com/iamolegataeff/chuck.optimizer)
+
+---
+
+## autograd
+
+the backward pass supports all 22 operation types. the tape records operations during forward, then backward walks it in reverse computing local gradients via the chain rule. standard reverse-mode AD.
+
+**gradient checking**: every op is verified against finite differences (`(f(x+h) - f(x-h)) / 2h`). relative error tolerances from 0.01 to 0.1 depending on op complexity. all pass. including the annoying ones like GEGLU and causal attention with their multi-path gradients.
+
+**gradient utilities**:
+- `nt_tape_clip_grads(max_norm)` — global gradient clipping
+- `nt_tape_accum_grads()` / `nt_tape_apply_accum(n)` — gradient accumulation for large effective batch sizes
+- `nt_nan_guard_check()` — NaN/Inf detection with automatic loss scaling. because sometimes your gradients decide to go to infinity and someone needs to tell them no.
+
+---
+
+## building
+
+```bash
+# CPU with BLAS acceleration (recommended)
+make
+
+# CPU without BLAS (works everywhere, even on a potato)
+make cpu
+
+# GPU (CUDA)
+make gpu
+
+# Static library (for embedding in your project)
+make lib
+
+# Build and run tests
+make test
+
+# Clean
+make clean
+```
+
+### dependencies
+
+- a C compiler (gcc, clang, whatever)
+- `-lm` (math library, because we use sqrt and exp like civilized people)
+- **optional**: OpenBLAS (Linux) or Accelerate framework (macOS) for BLAS-accelerated matmuls
+- **optional**: CUDA toolkit for GPU support
+
+that's it. no cmake. no configure script. no 300-line `requirements.txt`. no docker. no kubernetes. just `make`. the way Ken Thompson intended.
+
+---
+
+## running tests
+
+```bash
+make test
+```
+
+47 tests. all pass. covering:
+
+- **tensor operations**: creation, 2D, clone, reshape, Xavier init, refcounting
+- **forward ops**: SiLU, softmax, RMSNorm, LayerNorm, GELU, dropout
+- **tape mechanics**: recording, forward/backward through linear layers, causal attention, multi-head attention, sequence cross-entropy, sequence linear
+- **optimizers**: Adam, AdamW, Chuck, gradient clipping
+- **training integration**: single-token training loop, sequence training loop, attention model training, Chuck optimizer convergence
+- **numerical gradient checks**: cross-entropy, SiLU, RMSNorm, softmax, linear, seq_linear, causal attention, embedding, RoPE, GEGLU, arithmetic ops
+- **infrastructure**: save/load binary format, gradient accumulation, NaN guard, LR schedules (cosine, step, linear), Hebbian microlearning, profiler
+
+every gradient check uses finite differences to verify the analytic backward pass. if a single gradient is wrong, the test catches it. i trust these tests more than i trust most people.
+
+---
+
+## api overview
+
+### tensor lifecycle
+```c
+nt_tensor* t = nt_tensor_new(len);           // allocate 1D
+nt_tensor* m = nt_tensor_new2d(rows, cols);  // allocate 2D
+nt_tensor* s = nt_tensor_new_shape(shape, ndim); // arbitrary shape
+nt_tensor* c = nt_tensor_clone(t);           // deep copy
+nt_tensor_ref(t);                             // increment refcount
+nt_tensor_free(t);                            // decrement (free at 0)
+```
+
+### initialization
+```c
+nt_tensor_fill(t, 0.0f);                     // constant fill
+nt_tensor_rand(t, 0.5f);                     // uniform [-0.5, 0.5]
+nt_tensor_xavier(t, fan_in, fan_out);        // Xavier/Glorot
+nt_seed(42);                                  // reproducibility
+```
+
+### training
+```c
+nt_tape_start();                              // begin recording
+int w = nt_tape_param(W);                    // register param
+nt_tape_no_decay(w);                          // exclude from weight decay
+// ... build forward graph ...
+nt_tape_backward(loss_idx);                   // backward pass
+nt_tape_clip_grads(1.0f);                    // gradient clipping
+nt_tape_adam_step(lr);                        // optimize
+nt_tape_clear();                              // reset tape
+```
+
+### LR schedules
+```c
+nt_schedule s = nt_schedule_cosine(0.001f, warmup, total, min_lr);
+nt_schedule s = nt_schedule_step(0.1f, warmup, step_size, gamma);
+nt_schedule s = nt_schedule_linear(0.001f, warmup, total, min_lr);
+float lr = nt_schedule_get_lr(&s);            // auto-advance
+```
+
+### save/load
+```c
+nt_tensor* params[] = {W1, W2, b1};
+nt_save("model.bin", params, 3);              // binary format
+int n;
+nt_tensor** loaded = nt_load("model.bin", &n); // load back
+```
+
+---
+
+## example: training a model in C
+
+here's an actual, working transformer-ish training loop. embedding → attention → linear → cross-entropy. in C. without importing 2.7 GB of your dignity:
+
+```c
+#include "notorch.h"
+
+int main() {
+    nt_seed(42);
+    int vocab = 8, dim = 16, T = 4;
+
+    // allocate parameters
+    nt_tensor* wte = nt_tensor_new2d(vocab, dim);   // token embeddings
+    nt_tensor* wpe = nt_tensor_new2d(T, dim);       // position embeddings
+    nt_tensor* Wq  = nt_tensor_new2d(dim, dim);     // query projection
+    nt_tensor* Wk  = nt_tensor_new2d(dim, dim);     // key projection
+    nt_tensor* Wv  = nt_tensor_new2d(dim, dim);     // value projection
+    nt_tensor* Wo  = nt_tensor_new2d(vocab, dim);   // output projection
+
+    // Xavier init everything
+    nt_tensor_xavier(wte, vocab, dim);
+    nt_tensor_xavier(wpe, T, dim);
+    nt_tensor_xavier(Wq, dim, dim);
+    nt_tensor_xavier(Wk, dim, dim);
+    nt_tensor_xavier(Wv, dim, dim);
+    nt_tensor_xavier(Wo, dim, vocab);
+
+    // tokens: [1, 3, 5, 2], targets: [3, 5, 2, 7]
+    nt_tensor* tokens  = nt_tensor_new(T);
+    nt_tensor* targets = nt_tensor_new(T);
+    float tok[] = {1, 3, 5, 2}, tgt[] = {3, 5, 2, 7};
+    for (int i = 0; i < T; i++) { tokens->data[i] = tok[i]; targets->data[i] = tgt[i]; }
+
+    // training loop
+    nt_schedule sched = nt_schedule_cosine(0.005f, 10, 200, 0.0f);
+
+    for (int step = 0; step < 200; step++) {
+        float lr = nt_schedule_get_lr(&sched);
+        nt_tape_start();
+
+        int wte_i = nt_tape_param(wte); nt_tape_no_decay(wte_i);
+        int wpe_i = nt_tape_param(wpe); nt_tape_no_decay(wpe_i);
+        int wq_i  = nt_tape_param(Wq);
+        int wk_i  = nt_tape_param(Wk);
+        int wv_i  = nt_tape_param(Wv);
+        int wo_i  = nt_tape_param(Wo);
+        int tok_i = nt_tape_record(tokens, NT_OP_NONE, -1, -1, 0);
+        int tgt_i = nt_tape_record(targets, NT_OP_NONE, -1, -1, 0);
+
+        // forward: embed → Q/K/V → attention → output
+        int h      = nt_seq_embedding(wte_i, wpe_i, tok_i, T, dim);
+        int q      = nt_seq_linear(wq_i, h, T);
+        int k      = nt_seq_linear(wk_i, h, T);
+        int v      = nt_seq_linear(wv_i, h, T);
+        int attn   = nt_causal_attention(q, k, v, T, dim);
+        int logits = nt_seq_linear(wo_i, attn, T);
+        int loss   = nt_seq_cross_entropy(logits, tgt_i, T, vocab);
+
+        float lv = nt_tape_get()->entries[loss].output->data[0];
+        if (step % 50 == 0) printf("step %d: loss=%.4f lr=%.6f\n", step, lv, lr);
+
+        nt_tape_backward(loss);
+        nt_tape_clip_grads(1.0f);
+        nt_tape_adam_step(lr);
+        nt_tape_clear();
+    }
+
+    // cleanup
+    nt_tensor_free(wte); nt_tensor_free(wpe);
+    nt_tensor_free(Wq);  nt_tensor_free(Wk); nt_tensor_free(Wv); nt_tensor_free(Wo);
+    nt_tensor_free(tokens); nt_tensor_free(targets);
+    return 0;
+}
+```
+
+compile and run:
+```bash
+cc -O2 -Wall -std=c11 -o train train.c notorch.c -lm
+./train
+```
+
+that's it. that's the whole thing. no virtual environment. no requirements.txt. no "just pip install—" no. we're done with that. we've moved on. we've healed.
+
+---
+
+## platform support
+
+| platform | backend | command |
+|---|---|---|
+| macOS | Apple Accelerate (AMX / Neural Engine) | `make` |
+| Linux | OpenBLAS | `make` |
+| any POSIX | pure C fallback | `make cpu` |
+| NVIDIA GPU | CUDA + cuBLAS | `make gpu` |
+
+the BLAS backends are optional. without them, everything still works — just uses naive C loops. which are honestly fine for anything under ~50M parameters. for bigger stuff, BLAS gives you 10-50x on matmuls because it's using your CPU's vector instructions instead of pretending it's 1995.
+
+the macOS path uses Apple Accelerate, which means your MacBook's AMX coprocessor and Neural Engine are doing the heavy lifting. for free. no NVIDIA required. no drivers. no compatibility hell. just `make` and go.
+
+---
+
+## file structure
+
+```
+notorch/
+├── notorch.h          # header — all types, constants, API declarations (465 lines)
+├── notorch.c          # implementation — the whole framework (2488 lines)
+├── test_notorch.c     # test suite — 47 tests, numerical grad checks (1401 lines)
+├── Makefile           # build system (68 lines, because simplicity is art)
+├── LICENSE            # LGPL-3.0 (use it in your stuff, just share improvements)
+└── README.md          # you are here. are you okay? it's been a long read.
+```
+
+total: **~4400 lines of C**. that's the entire framework, tests, and build system.
+
+for reference, PyTorch's `torch/` directory alone is ~800,000 lines of Python, ~1,500,000 lines of C++, and an emotional support system for its build engineers. notorch is 0.15% of that. and it does everything you need to train a transformer.
+
+---
+
+## tests
+
+the test suite is comprehensive and slightly unhinged:
+
+### unit tests
+- tensor allocation, 2D creation, cloning, reshape, Xavier init
+- refcounting (increment, decrement, free-at-zero)
+- forward ops: SiLU, softmax, RMSNorm, LayerNorm, GELU
+- causal attention: verify first position attends only to itself
+- multi-head attention: correct output dimensionality
+- sequence cross-entropy: loss in expected range, gradients exist
+- dropout: ~50% zeroed in training, 0% in eval, correct scaling
+- save/load: roundtrip through binary format preserving shape and data
+
+### gradient checks
+every backward pass is verified against finite differences: `(f(x+h) - f(x-h)) / 2h`
+
+- cross-entropy (tol: 0.01)
+- SiLU (tol: 0.05)
+- RMSNorm (tol: 0.05)
+- softmax (tol: 0.1 — softmax gradients are squirrely near boundaries)
+- linear / matvec (tol: 0.1)
+- sequence linear (tol: 0.1)
+- causal attention (tol: 0.1 — multi-path gradients through Q, K, V)
+- embedding lookup (tol: 0.01)
+- RoPE (tol: 0.05)
+- GEGLU (tol: 0.3 — tanh-approx GELU has inherent numerical slop)
+- add, mul, scale (tol: 0.01)
+
+### integration tests
+- single-token training loop: loss converges to ~0
+- sequence training loop: loss decreases significantly
+- attention model training: embed → Q/K/V → causal attention → output
+- Chuck optimizer convergence: verify self-aware Adam doesn't lose to regular Adam
+- LR schedule integration: cosine schedule + Adam converges correctly
+- gradient accumulation: multi-step accumulation + apply + Adam
+- NaN guard: detect injected NaN, zero grads, adjust loss scale
+
+### infrastructure tests
+- cosine LR schedule: warmup ramp, mid-range, end convergence
+- step LR schedule: discrete decay at step boundaries
+- NaN detection and recovery
+- profiler: enable/disable/print without crash
+- Hebbian microlearning step: verify weight updates
+
+---
+
+## performance
+
+this isn't a benchmarking paper. but here are some vibes:
+
+- **compile time**: <1 second. your coffee won't even cool down.
+- **import time**: 0 ms. there's nothing to import. it's C.
+- **binary size**: ~100 KB. yes, kilobytes. PyTorch's `libtorch.so` is 1.2 GB. notorch is 0.008% of that.
+- **memory overhead**: tensor data + tape entries. no Python object headers. no gradient graph metadata bloat. no "accidental quadratic" from `retain_graph=True`.
+- **matmul speed**: competitive with numpy (which itself uses BLAS) when compiled with OpenBLAS or Accelerate. faster on small matrices because no Python dispatch overhead.
+
+for inference, this is excellent. for training, it's more than sufficient for models up to ~100M parameters. for anything bigger, you want distributed training and that's a different problem (and a different repo, probably).
+
+---
+
+## philosophy
+
+> *patterns over parameters. emergence over engineering. C over existential dread.*
+
+neural networks are not complicated. a linear layer is a matrix multiply. an activation function is a pointwise nonlinearity. attention is a weighted sum. cross-entropy is a log-probability. backward is the chain rule.
+
+that's it. that's the whole field. everything else is optimization, infrastructure, and marketing.
+
+PyTorch, TensorFlow, JAX — they're brilliant pieces of engineering. but they solve the general case so aggressively that the simple case becomes absurdly complex. want to train a 2-layer model? same infrastructure as a 175B parameter model. same compilation times. same memory footprint. same existential weight.
+
+notorch solves the case that matters to me: training and running models in C, with minimal dependencies, maximal transparency, and the ability to embed in any application without shipping a Python runtime.
+
+if you can read the code, you understand the framework. there's no magic. there's no hidden complexity. every gradient is hand-derived and verified against finite differences. every memory allocation has a corresponding free. every edge case is checked.
+
+this is what software looks like when you strip away everything that doesn't serve the core purpose. just math. just memory. just the machine doing exactly what you told it to do.
+
+---
+
+## contributing
+
+send PRs. or don't. i'm not your manager.
+
+but if you do:
+- keep it C11 compliant
+- no external dependencies (BLAS is optional and compile-time)
+- add tests for new ops (with numerical gradient checks)
+- keep the header clean — if it doesn't need to be public, don't expose it
+- run `make test` before submitting. all 47 tests must pass.
+
+---
+
+## license
+
+LGPL-3.0-or-later. use it in your stuff. link against it. build commercial products with it. just share improvements to the library itself. because that's how open source works. or should work. don't be weird about it.
+
+---
+
+## final words
+
+look. i know this sounds insane. "guy rewrites PyTorch in 2500 lines of C and calls it a framework." i get it. i see how that looks.
+
+but here's the thing: the entire history of deep learning fits in a few dozen mathematical operations. matmul. softmax. relu. cross-entropy. adam. backward. that's it. the rest is infrastructure. and infrastructure should be invisible. it should compile in a second. it should fit in your head. it should not require a Docker container.
+
+notorch is proof that you don't need 2 million lines of code to train a neural network. you need about 2500. and 1400 of those are the test suite because i believe in verification more than i believe in hope.
+
+train your models. in C. without permission. without pip. without conda. without a GPU if you don't want one. without 2.7 GB of framework overhead. without a virtual environment. without existential dread.
+
+just: `cc -O2 notorch.c your_model.c -lm -o train && ./train`
+
+that's it. go build something. and if you use it to train something cool, let me know.
+
+or don't. i'll be here. writing C. staring at gradients. living my best life.
+
+> *"the patterns were always there. we just needed the right language to express them."*  
+> — notorch, internally, probably, if it could talk, which it can't, because it's C, not Python.

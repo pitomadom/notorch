@@ -1,0 +1,4 @@
+notorch_test
+notorch_test_gpu
+*.o
+*.a
