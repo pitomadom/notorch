@@ -171,9 +171,11 @@ int main(int argc, char** argv) {
         nt_tape_chuck_step(lr, lv);
         nt_tape_clear();
 
-        if ((step+1) % 50 == 0 || step == 0)
+        if ((step+1) % 100 == 0 || step == 0) {
             printf("  step %5d | train %.4f | best %.4f | lr %.2e | %.1fs\n",
                    step+1, lv, best_loss, lr, (now_ms()-t0)/1000.0);
+            fflush(stdout);
+        }
     }
 
     double total_s = (now_ms()-t0)/1000.0;

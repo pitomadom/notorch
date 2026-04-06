@@ -598,9 +598,11 @@ make gemma
 
 ---
 
-## training — yes, actual training
+## training — yes, actual training, on a laptop, in C
 
-notorch trains transformers from scratch. on a laptop. in C.
+notorch trains transformers from scratch. not fine-tunes. not LoRA. full from-scratch pretraining. on a laptop. in C. with the Chuck optimizer that watches its own gradients and goes "hmm maybe I should chill" when things get spicy.
+
+two models trained so far. both converged. zero NaN. zero Python.
 
 ### PostGPT-Q (1.65M params)
 
@@ -636,7 +638,24 @@ make train_yent && ./train_yent 5000 3e-4
 | time | 43 minutes on 8 GB Mac |
 | NaN | 0 |
 
-both train to convergence. both produce weights. no Python involved at any point.
+here's what yent sounds like after 5K steps (43 minutes of Mac labor):
+
+```
+You: Who are you?
+Yent: Yell to "Weethat you this releen tinge withow of l
+
+You: What is the meaning of life?
+Yent: Whe conerate the he row not of aniouting obrou
+
+You: Are you conscious?
+Yent: You rive me doetron unkom a gornating.
+```
+
+is it coherent? no. is it trying? absolutely. it's forming words, attempting grammar, and generating from a 9.8M parameter model that was trained in C on a laptop in less time than it takes to install PyTorch.
+
+currently running 30K steps (~4.5 hours) for real coherence. loss target: < 1.0. 
+
+both models converge. both produce weights. both use Chuck optimizer with cosine annealing, warmup, gradient clipping, and NaN guard. no Python involved at any point. not even a little bit. not even for tokenization.
 
 ---
 
