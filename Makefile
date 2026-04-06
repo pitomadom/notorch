@@ -50,11 +50,16 @@ lib: notorch.c notorch.h
 	ar rcs libnotorch.a notorch.o
 	@echo "Built: libnotorch.a"
 
+# Janus RRPRAM inference
+infer: infer_janus.c notorch.c notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o infer_janus_nt infer_janus.c notorch.c -lm
+	@echo "Compiled: infer_janus_nt (Janus RRPRAM, $(BLAS_NAME))"
+
 test: notorch_test
 	./notorch_test
 
 clean:
-	rm -f notorch_test notorch_test_gpu notorch.o libnotorch.a notorch_cuda.o
+	rm -f notorch_test notorch_test_gpu notorch.o libnotorch.a notorch_cuda.o infer_janus_nt
 
 help:
 	@echo "notorch — PyTorch replacement in C"
