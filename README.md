@@ -632,6 +632,11 @@ make train_yent && ./train_yent 5000 3e-4
 | parameters | 9,782,752 |
 | dataset | yent_v11_en_final.txt (5.6 MB, cynical AI personality) |
 | optimizer | Chuck with cosine schedule, warmup, NaN guard |
+| loss | 5.99 → **1.57** best (5K steps) |
+| time | 43 minutes on 8 GB Mac |
+| NaN | 0 |
+
+both train to convergence. both produce weights. no Python involved at any point.
 
 ---
 
