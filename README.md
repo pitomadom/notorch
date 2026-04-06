@@ -108,7 +108,7 @@ so here we are. **notorch**. everything you need. nothing you don't. no Python r
 look, pytorch isn't bad. it's genuinely brilliant engineering. i learned everything from it. i respect it deeply. but i also respect myself, and every time i type `import torch` on a machine with 8 GB of RAM, a small part of me dies.
 
 notorch isn't a pytorch replacement for everyone. it's a pytorch replacement for people who:
-- want to understand what's actually happening (all 2488 lines of it)
+- want to understand what's actually happening (all ~2500 lines of it)
 - want to train models on machines that aren't cloud instances
 - want compile times measured in milliseconds, not minutes
 - want to embed neural network inference in C/C++ applications without shipping half of Python
@@ -477,20 +477,25 @@ the macOS path uses Apple Accelerate, which means your MacBook's AMX coprocessor
 
 ```
 notorch/
-├── notorch.h          # core API — tensors, autograd, optimizers, ops (465 lines)
-├── notorch.c          # core implementation (2488 lines)
-├── gguf.h             # GGUF file parser header (100 lines)
-├── gguf.c             # GGUF parser + F32/F16/Q4_0/Q5_0/Q8_0/Q4_K/Q6_K dequant (420 lines)
-├── infer_janus.c      # Janus RRPRAM inference — universal loader (370 lines)
-├── infer_gemma.c      # Gemma-3 inference via GGUF — GQA, KV cache (430 lines)
-├── test_notorch.c     # 47 tests, numerical gradient checks (1400 lines)
-├── test_gguf.c        # GGUF parser tests (40 lines)
-├── Makefile           # build: CPU/GPU/inference/test (75 lines)
-├── LICENSE            # LGPL-3.0
-└── README.md          # this. you survived. congratulations.
+├── notorch.h              # core API — tensors, autograd, optimizers, ops (470 lines)
+├── notorch.c              # core implementation (2505 lines)
+├── gguf.h                 # GGUF file parser header (96 lines)
+├── gguf.c                 # GGUF parser + F32/F16/Q4_0/Q5_0/Q8_0/Q4_K/Q6_K dequant (366 lines)
+├── Makefile               # build: CPU/GPU/inference/training/test
+├── examples/
+│   ├── infer_janus.c      # Janus RRPRAM inference (506 lines)
+│   ├── infer_gemma.c      # Gemma-3 inference via GGUF — GQA, KV cache (621 lines)
+│   ├── infer_llama.c      # LLaMA/Qwen/SmolLM2 inference via GGUF (366 lines)
+│   ├── train_q.c          # PostGPT-Q 1.65M training from scratch (370 lines)
+│   └── train_yent.c       # Yent 9.8M LLaMA training with checkpointing (372 lines)
+├── tests/
+│   ├── test_notorch.c     # 47 tests, numerical gradient checks (1400 lines)
+│   └── test_gguf.c        # GGUF parser tests (39 lines)
+├── LICENSE                # LGPL-3.0
+└── README.md              # this. you survived. congratulations.
 ```
 
-total: **~6000 lines of C**. framework + GGUF + inference engines + tests. tested on 20+ real model files across 4 architectures (llama, gemma3, qwen2, pitomadom).
+total: **~7100 lines of C**. framework + GGUF + 3 inference engines + 2 training scripts + 47 tests. tested on 26+ real model files across 6 architectures (llama, gemma3, qwen2, janus, pitomadom, smollm2).
 
 for reference, PyTorch's `torch/` directory alone is ~800,000 lines of Python, ~1,500,000 lines of C++, and an emotional support system for its build engineers. notorch is 0.15% of that. and it does everything you need to train a transformer.
 

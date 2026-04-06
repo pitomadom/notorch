@@ -1,9 +1,22 @@
+# binaries
 notorch_test
 notorch_test_gpu
-*.o
-*.a
 infer_gemma
 infer_janus_nt
+infer_llama
 test_gguf
-notorch_test
+train_q
+train_yent
+chat_yent
+
+# build artifacts
 *.o
+*.a
+
+# weights & checkpoints
+*.bin
+*.ckpt
+*.meta
+
+# logs
+*.log
