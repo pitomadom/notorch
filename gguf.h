@@ -14,7 +14,10 @@
 #define GGUF_TYPE_F16   1
 #define GGUF_TYPE_Q4_0  2
 #define GGUF_TYPE_Q4_1  3
+#define GGUF_TYPE_Q5_0  6
 #define GGUF_TYPE_Q8_0  8
+#define GGUF_TYPE_Q4_K 12
+#define GGUF_TYPE_Q6_K 14
 
 #define GGUF_MAX_TENSORS 512
 #define GGUF_MAX_NAME    128

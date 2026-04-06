@@ -230,6 +230,76 @@ static void dequant_q8_0(const uint8_t* src, float* dst, uint64_t n_elements) {
     }
 }
 
+// Q4_K: block = 2+2 bytes f16 (d, dmin) + 12 bytes scales + 128 nibbles = 144 bytes, 256 values
+static void get_scale_min_k4(int j, const uint8_t *sc, uint8_t *s, uint8_t *m) {
+    if (j < 4) { *s = sc[j] & 63; *m = sc[j+4] & 63; }
+    else { *s = (sc[j+4] & 0x0F) | ((sc[j-4] >> 6) << 4); *m = (sc[j+4] >> 4) | ((sc[j] >> 6) << 4); }
+}
+
+static void dequant_q4_k(const uint8_t *data, float *out, uint64_t n) {
+    uint64_t nblocks = n / 256;
+    for (uint64_t i = 0; i < nblocks; i++) {
+        const uint8_t *b = data + i * 144;
+        float d = f16_to_f32(b[0] | (b[1] << 8));
+        float dmin = f16_to_f32(b[2] | (b[3] << 8));
+        const uint8_t *sc = b + 4, *qs = b + 16;
+        int is = 0, qi = 0, oi = (int)(i * 256);
+        for (int j = 0; j < 256; j += 64) {
+            uint8_t sc0, m0, sc1, m1v;
+            get_scale_min_k4(is, sc, &sc0, &m0);
+            float d1 = d * (float)sc0, mm1 = dmin * (float)m0;
+            get_scale_min_k4(is+1, sc, &sc1, &m1v);
+            float d2 = d * (float)sc1, mm2 = dmin * (float)m1v;
+            for (int l = 0; l < 32; l++)
+                out[oi + j + l] = d1 * (float)(qs[qi+l] & 0x0F) - mm1;
+            for (int l = 0; l < 32; l++)
+                out[oi + j + 32 + l] = d2 * (float)(qs[qi+l] >> 4) - mm2;
+            qi += 32; is += 2;
+        }
+    }
+}
+
+// Q6_K: block = 128 ql + 64 qh + 16 scales + 2 d = 210 bytes, 256 values
+static void dequant_q6_k(const uint8_t *data, float *out, uint64_t n) {
+    uint64_t nblocks = n / 256;
+    for (uint64_t i = 0; i < nblocks; i++) {
+        const uint8_t *b = data + i * 210;
+        const uint8_t *ql = b, *qh = b + 128;
+        const int8_t *sc = (const int8_t*)(b + 192);
+        float d = f16_to_f32(b[208] | (b[209] << 8));
+        for (int n_ = 0; n_ < 256; n_ += 128) {
+            for (int l = 0; l < 32; l++) {
+                int is_ = n_/128*2;
+                uint8_t q0 = ql[n_/2+l] & 0xF, q1 = ql[n_/2+l] >> 4;
+                uint8_t q2 = ql[n_/2+l+32] & 0xF, q3 = ql[n_/2+l+32] >> 4;
+                uint8_t h0 = (qh[n_/4+l] >> 0) & 3, h1 = (qh[n_/4+l] >> 2) & 3;
+                uint8_t h2 = (qh[n_/4+l] >> 4) & 3, h3 = (qh[n_/4+l] >> 6) & 3;
+                out[i*256 + n_ + l]      = d * sc[is_+0] * ((int)(q0 | (h0<<4)) - 32);
+                out[i*256 + n_ + l + 32] = d * sc[is_+1] * ((int)(q1 | (h1<<4)) - 32);
+                out[i*256 + n_ + l + 64] = d * sc[is_+2] * ((int)(q2 | (h2<<4)) - 32);
+                out[i*256 + n_ + l + 96] = d * sc[is_+3] * ((int)(q3 | (h3<<4)) - 32);
+            }
+        }
+    }
+}
+
+// Q5_0: block = 2 bytes f16 + 4 bytes high bits + 16 bytes nibbles = 22 bytes, 32 values
+static void dequant_q5_0(const uint8_t *data, float *out, uint64_t n) {
+    uint64_t nblocks = n / 32;
+    for (uint64_t i = 0; i < nblocks; i++) {
+        const uint8_t *b = data + i * 22;
+        float d = f16_to_f32(b[0] | (b[1] << 8));
+        uint32_t qh = b[2] | (b[3]<<8) | (b[4]<<16) | (b[5]<<24);
+        const uint8_t *qs = b + 6;
+        for (int j = 0; j < 16; j++) {
+            int lo = qs[j] & 0x0F, hi = qs[j] >> 4;
+            int hbit0 = (qh >> j) & 1, hbit1 = (qh >> (j+16)) & 1;
+            out[i*32 + j] = (float)((lo | (hbit0<<4)) - 16) * d;
+            out[i*32 + j + 16] = (float)((hi | (hbit1<<4)) - 16) * d;
+        }
+    }
+}
+
 float* gguf_dequant(const gguf_file* gf, int tensor_idx) {
     if (!gf || tensor_idx < 0 || tensor_idx >= (int)gf->n_tensors) return NULL;
     const gguf_tensor_info* ti = &gf->tensors[tensor_idx];
@@ -251,8 +321,17 @@ float* gguf_dequant(const gguf_file* gf, int tensor_idx) {
     case GGUF_TYPE_Q4_0:
         dequant_q4_0(src, dst, ti->n_elements);
         break;
+    case GGUF_TYPE_Q5_0:
+        dequant_q5_0(src, dst, ti->n_elements);
+        break;
     case GGUF_TYPE_Q8_0:
         dequant_q8_0(src, dst, ti->n_elements);
+        break;
+    case GGUF_TYPE_Q4_K:
+        dequant_q4_k(src, dst, ti->n_elements);
+        break;
+    case GGUF_TYPE_Q6_K:
+        dequant_q6_k(src, dst, ti->n_elements);
         break;
     default:
         fprintf(stderr, "gguf: unsupported dtype %d for tensor '%s'\n", ti->dtype, ti->name);
@@ -272,11 +351,11 @@ void gguf_print_info(const gguf_file* gf) {
     printf("  rope_base=%.0f rms_eps=%.1e\n", gf->rope_freq_base, gf->rms_eps);
 
     // List tensors
-    const char* dtype_names[] = {"F32", "F16", "Q4_0", "Q4_1", "?", "?", "?", "?", "Q8_0"};
+    const char* dtype_names[] = {"F32", "F16", "Q4_0", "Q4_1", "?", "?", "Q5_0", "?", "Q8_0", "?", "?", "?", "Q4_K", "?", "Q6_K"};
     uint64_t total_params = 0;
     for (uint64_t i = 0; i < gf->n_tensors && i < GGUF_MAX_TENSORS; i++) {
         const gguf_tensor_info* ti = &gf->tensors[i];
-        const char* dn = ti->dtype <= 8 ? dtype_names[ti->dtype] : "?";
+        const char* dn = ti->dtype <= 14 ? dtype_names[ti->dtype] : "?";
         printf("  [%2llu] %-40s %s  [", i, ti->name, dn);
         for (uint32_t d = 0; d < ti->ndim; d++)
             printf("%llu%s", ti->shape[d], d < ti->ndim - 1 ? "," : "");
