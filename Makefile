@@ -60,6 +60,11 @@ gemma: infer_gemma.c gguf.c gguf.h notorch.c notorch.h
 	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o infer_gemma infer_gemma.c gguf.c notorch.c -lm
 	@echo "Compiled: infer_gemma (Gemma-3 GGUF, $(BLAS_NAME))"
 
+# LLaMA/Qwen/SmolLM2 inference via GGUF
+llama: infer_llama.c gguf.c gguf.h notorch.c notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o infer_llama infer_llama.c gguf.c notorch.c -lm
+	@echo "Compiled: infer_llama (LLaMA/Qwen GGUF, $(BLAS_NAME))"
+
 test: notorch_test
 	./notorch_test
 

@@ -50,7 +50,7 @@ yeah. me too. so i did something about it.
 
 just C. just floats. just `cc notorch.c -o notorch -lm`. done. you now have a neural network framework. the entire thing compiles in under a second. try that with PyTorch. go ahead. i'll wait. actually no i won't because i'd be waiting for 47 minutes while cmake does whatever cmake does.
 
-it's part of [the Arianna Method](https://github.com/ariannamethod/ariannamethod) — patterns over parameters, emergence over engineering, raw C over existential dread.
+it's part of [the Arianna Method](https://github.com/theariannamethod/ariannamethod.ai) — patterns over parameters, emergence over engineering, raw C over existential dread.
 
 extracted from the core of [ariannamethod.ai](https://ariannamethod.ai) where it actually runs in production. training actual models. in C. like adults.
 
@@ -79,7 +79,7 @@ and for WHAT? a matmul and a softmax. that's all neural networks are. matmuls an
 
 so here we are. **notorch**. everything you need. nothing you don't. no Python runtime. no GIL. no garbage collector pausing your training at the worst possible moment. no `torch.no_grad()` context manager that you forget and then wonder why you're out of memory. just tensors, autograd, optimizers, and the cold clarity of C.
 
-**the entire framework is two files.** `notorch.h` and `notorch.c`. that's it. ~2500 lines. you can read the whole thing in an afternoon. try reading PyTorch's source in an afternoon. actually don't. you'll end up in a hospital.
+**the entire framework is two files.** `notorch.h` and `notorch.c`. that's it. ~3000 lines. you can read the whole thing in an afternoon. try reading PyTorch's source in an afternoon. actually don't. you'll end up in a hospital.
 
 ---
 
@@ -490,7 +490,7 @@ notorch/
 └── README.md          # this. you survived. congratulations.
 ```
 
-total: **~5800 lines of C**. framework + GGUF + two inference engines + tests. tested on 20 real model files across 4 architectures (llama, gemma3, qwen2, pitomadom).
+total: **~6000 lines of C**. framework + GGUF + inference engines + tests. tested on 20+ real model files across 4 architectures (llama, gemma3, qwen2, pitomadom).
 
 for reference, PyTorch's `torch/` directory alone is ~800,000 lines of Python, ~1,500,000 lines of C++, and an emotional support system for its build engineers. notorch is 0.15% of that. and it does everything you need to train a transformer.
 
