@@ -128,18 +128,23 @@ typedef struct {
 // θ -= (α × λ × λ_l) × m̂/(√v̂ + ε) + η
 // github.com/iamolegataeff/chuck.optimizer
 
+// Synced with PyTorch chuck.py (iamolegataeff/chuck.optimizer) 2026-04-06
 #define NT_CHUCK_WINDOW      16
 #define NT_CHUCK_DAMP_LO     0.3f
 #define NT_CHUCK_DAMP_HI     2.0f
-#define NT_CHUCK_DAMP_DOWN   0.95f
-#define NT_CHUCK_DAMP_UP     1.05f
+#define NT_CHUCK_DAMP_DOWN   0.97f    // was 0.95, PyTorch = 0.97 (less aggressive)
+#define NT_CHUCK_DAMP_UP     1.03f    // was 1.05, PyTorch = 1.03 (less aggressive)
+#define NT_CHUCK_TREND_BRAKE  0.02f   // loss rising > 2% → brake
+#define NT_CHUCK_TREND_PUSH  -0.02f   // loss falling > 2% → push (symmetric)
 #define NT_CHUCK_STAG_THRESH 0.001f
 #define NT_CHUCK_STAG_STEPS  8
 #define NT_CHUCK_NOISE_MAG   0.001f
+#define NT_CHUCK_NOISE_DECAY 0.9f     // exponential noise decay per step
 #define NT_CHUCK_FREEZE_THRESH 0.01f
-#define NT_CHUCK_MACRO_INT   500
+#define NT_CHUCK_MACRO_INT   1000     // was 500, PyTorch = 1000
 #define NT_CHUCK_MACRO_PAT   3
 #define NT_CHUCK_MACRO_DECAY 0.5f
+#define NT_CHUCK_MEAN_REVERT 0.999f   // dampen → 1.0 EMA (prevents drift)
 
 typedef struct {
     float grad_hist[NT_CHUCK_WINDOW];

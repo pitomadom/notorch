@@ -1194,10 +1194,12 @@ static float chuck_randn(void) {
     return 2.0f * (float)(chuck_rng) / 4294967296.0f - 1.0f;
 }
 
+// Synced with PyTorch chuck.py (iamolegataeff/chuck.optimizer) 2026-04-06
+// θ -= (α × S × λ × λ_l) × m̂/(√v̂ + ε) + η
 void nt_tape_chuck_step(float lr, float loss_val) {
     float beta1 = 0.9f, beta2 = 0.999f, eps = 1e-8f;
 
-    // Level 1: Global loss trend → λ
+    // ── Level 1: Global loss trend → λ (dampen) ──
     nt_chuck_state* cs = &g_tape.chuck;
     if (!cs->initialized) {
         cs->dampen = 1.0f;
@@ -1222,22 +1224,29 @@ void nt_tape_chuck_step(float lr, float loss_val) {
         float recent_avg = chuck_ring_avg(cs->loss_hist, cs->pos, cs->full, recent_start, q);
         if (old_avg > eps) {
             float trend = (recent_avg - old_avg) / old_avg;
-            if (trend > 0.01f) cs->dampen *= NT_CHUCK_DAMP_DOWN;
-            if (trend < -0.05f) cs->dampen *= NT_CHUCK_DAMP_UP;
-            // Level 3: Stagnation escape
+            // Symmetric thresholds (synced with PyTorch: 0.02 / -0.02)
+            if (trend > NT_CHUCK_TREND_BRAKE) cs->dampen *= NT_CHUCK_DAMP_DOWN;
+            if (trend < NT_CHUCK_TREND_PUSH)  cs->dampen *= NT_CHUCK_DAMP_UP;
+
+            // ── Level 3: Stagnation escape ──
             if (fabsf(trend) < NT_CHUCK_STAG_THRESH) {
                 cs->stag++;
-                if (cs->stag >= NT_CHUCK_STAG_STEPS) cs->noise = NT_CHUCK_NOISE_MAG;
+                if (cs->stag >= NT_CHUCK_STAG_STEPS) {
+                    cs->noise = NT_CHUCK_NOISE_MAG;
+                    cs->stag = 0;  // reset counter (PyTorch behavior)
+                }
             } else {
                 cs->stag = 0;
-                cs->noise = 0.0f;
+                cs->noise *= NT_CHUCK_NOISE_DECAY;  // exponential decay (was: reset to 0)
             }
         }
     }
+    // Mean reversion: pull dampen toward 1.0 (prevents drift)
+    cs->dampen = NT_CHUCK_MEAN_REVERT * cs->dampen + (1.0f - NT_CHUCK_MEAN_REVERT) * 1.0f;
     if (cs->dampen < NT_CHUCK_DAMP_LO) cs->dampen = NT_CHUCK_DAMP_LO;
     if (cs->dampen > NT_CHUCK_DAMP_HI) cs->dampen = NT_CHUCK_DAMP_HI;
 
-    // Level 9: Multi-scale awareness (macro patience)
+    // ── Level 9: Multi-scale awareness (macro patience) ──
     cs->global_step++;
     if (cs->macro_ema == 0.0f) cs->macro_ema = loss_val;
     else cs->macro_ema = 0.999f * cs->macro_ema + 0.001f * loss_val;
@@ -1252,13 +1261,18 @@ void nt_tape_chuck_step(float lr, float loss_val) {
         } else {
             cs->best_macro = cs->macro_ema;
             cs->macro_stag = 0;
+            // LR recovery when improving (PyTorch: lr_scale *= 1.2)
+            if (cs->lr_scale < 1.0f) {
+                cs->lr_scale *= 1.2f;
+                if (cs->lr_scale > 1.0f) cs->lr_scale = 1.0f;
+            }
         }
     }
 
     float global_lambda = cs->dampen;
     float noise_mag = cs->noise;
 
-    // Level 2: Per-param + Adam update
+    // ── Level 2: Per-param gradient norm + Adam update ──
     int param_idx = 0;
     for (int i = 0; i < g_tape.count && param_idx < g_tape.n_params; i++) {
         nt_tape_entry* e = &g_tape.entries[i];
@@ -1288,8 +1302,9 @@ void nt_tape_chuck_step(float lr, float loss_val) {
             float recent_gn = chuck_ring_avg(cp->grad_hist, cp->pos, cp->full, recent_start, q);
             if (old_gn > eps) {
                 float gtrend = (recent_gn - old_gn) / old_gn;
-                if (gtrend > 0.01f) cp->dampen *= NT_CHUCK_DAMP_DOWN;
-                if (gtrend < -0.05f) cp->dampen *= NT_CHUCK_DAMP_UP;
+                // Per-param: 0.05 thresholds (symmetric, PyTorch)
+                if (gtrend > 0.05f)  cp->dampen *= NT_CHUCK_DAMP_UP;   // grad rising → boost
+                if (gtrend < -0.05f) cp->dampen *= NT_CHUCK_DAMP_DOWN;  // grad settling → ease
             }
             if (gnorm < NT_CHUCK_FREEZE_THRESH) {
                 cp->stag++;
@@ -1297,6 +1312,8 @@ void nt_tape_chuck_step(float lr, float loss_val) {
             } else {
                 cp->stag = 0;
             }
+            // Per-param mean reversion
+            cp->dampen = NT_CHUCK_MEAN_REVERT * cp->dampen + (1.0f - NT_CHUCK_MEAN_REVERT) * 1.0f;
             if (cp->dampen < NT_CHUCK_DAMP_LO) cp->dampen = NT_CHUCK_DAMP_LO;
             if (cp->dampen > NT_CHUCK_DAMP_HI) cp->dampen = NT_CHUCK_DAMP_HI;
         }
