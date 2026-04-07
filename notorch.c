@@ -575,29 +575,37 @@ void nt_tape_backward(int loss_idx) {
         case NT_OP_SEQ_EMBED: {
             if (e->parent1 >= 0 && e->parent3 >= 0) {
                 nt_tape_entry* pwte = &g_tape.entries[e->parent1];
-                nt_tape_entry* pwpe = &g_tape.entries[e->parent2];
                 nt_tape_entry* ptok = &g_tape.entries[e->parent3];
                 int T = (int)e->aux;
                 int D = (int)e->aux2;
                 float* dwte = (float*)calloc(pwte->output->len, sizeof(float));
-                float* dwpe = (float*)calloc(pwpe->output->len, sizeof(float));
-                if (dwte && dwpe) {
+                if (dwte) {
                     int wte_rows = pwte->output->ndim >= 2 ? pwte->output->shape[0] : pwte->output->len / D;
-                    int wpe_rows = pwpe->output->ndim >= 2 ? pwpe->output->shape[0] : pwpe->output->len / D;
                     for (int t = 0; t < T; t++) {
                         int tok = (int)ptok->output->data[t];
                         if (tok < 0) tok = 0;
                         if (tok >= wte_rows) tok = wte_rows - 1;
-                        int pos = t < wpe_rows ? t : wpe_rows - 1;
-                        for (int d = 0; d < D; d++) {
+                        for (int d = 0; d < D; d++)
                             dwte[tok * D + d] += dout[t * D + d];
-                            dwpe[pos * D + d] += dout[t * D + d];
-                        }
                     }
                     tape_acc_grad(e->parent1, dwte, pwte->output->len);
-                    tape_acc_grad(e->parent2, dwpe, pwpe->output->len);
                 }
-                free(dwte); free(dwpe);
+                free(dwte);
+                /* Position embedding gradients (if present) */
+                if (e->parent2 >= 0) {
+                    nt_tape_entry* pwpe = &g_tape.entries[e->parent2];
+                    float* dwpe = (float*)calloc(pwpe->output->len, sizeof(float));
+                    if (dwpe) {
+                        int wpe_rows = pwpe->output->ndim >= 2 ? pwpe->output->shape[0] : pwpe->output->len / D;
+                        for (int t = 0; t < T; t++) {
+                            int pos = t < wpe_rows ? t : wpe_rows - 1;
+                            for (int d = 0; d < D; d++)
+                                dwpe[pos * D + d] += dout[t * D + d];
+                        }
+                        tape_acc_grad(e->parent2, dwpe, pwpe->output->len);
+                    }
+                    free(dwpe);
+                }
             }
             break;
         }
