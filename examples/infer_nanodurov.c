@@ -63,7 +63,50 @@ static void model_free(Model* m) {
     nt_tensor_free(m->rms_f); nt_tensor_free(m->head); free(m);
 }
 
+/* FP16 → FP32 */
+static float f16_to_f32(uint16_t h) {
+    uint32_t sign = (h & 0x8000) << 16;
+    uint32_t exp = (h >> 10) & 0x1F;
+    uint32_t mant = h & 0x3FF;
+    if (exp == 0) { float z = 0; uint32_t r = sign; memcpy(&z, &r, 4); return z; }
+    if (exp == 31) exp = 255; else exp = exp - 15 + 127;
+    uint32_t r = sign | (exp << 23) | (mant << 13);
+    float f; memcpy(&f, &r, 4); return f;
+}
+
+static int load_weights_f16(Model* m, const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return -1;
+    uint32_t magic; int n;
+    fread(&magic, 4, 1, f); fread(&n, 4, 1, f);
+    if (magic != 0x3631544E) { fclose(f); return -1; } /* "NT16" */
+    int expected = model_n_tensors();
+    if (n != expected) { fclose(f); return -1; }
+    nt_tensor* params[75];
+    int pi = 0;
+    params[pi++] = m->wte;
+    for (int l = 0; l < NLAYERS; l++) {
+        params[pi++]=m->L[l].rms1; params[pi++]=m->L[l].wq; params[pi++]=m->L[l].wk;
+        params[pi++]=m->L[l].wv; params[pi++]=m->L[l].wo; params[pi++]=m->L[l].rms2;
+        params[pi++]=m->L[l].w_gate; params[pi++]=m->L[l].w_up; params[pi++]=m->L[l].w_down;
+    }
+    params[pi++] = m->rms_f; params[pi++] = m->head;
+    for (int t = 0; t < expected; t++) {
+        int ndim; fread(&ndim, 4, 1, f);
+        for (int d = 0; d < ndim; d++) { int s; fread(&s, 4, 1, f); }
+        for (int i = 0; i < params[t]->len; i++) {
+            uint16_t h; fread(&h, 2, 1, f);
+            params[t]->data[i] = f16_to_f32(h);
+        }
+    }
+    fclose(f);
+    return 0;
+}
+
 static int load_weights(Model* m, const char* path) {
+    /* Try FP16 first */
+    if (load_weights_f16(m, path) == 0) { printf("loaded FP16 weights\n"); return 0; }
+    /* Fallback to FP32 (notorch format) */
     int n_loaded = 0;
     nt_tensor** loaded = nt_load(path, &n_loaded);
     if (!loaded) return -1;
