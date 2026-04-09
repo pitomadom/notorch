@@ -477,25 +477,45 @@ the macOS path uses Apple Accelerate, which means your MacBook's AMX coprocessor
 
 ```
 notorch/
-├── notorch.h              # core API — tensors, autograd, optimizers, ops (470 lines)
-├── notorch.c              # core implementation (2505 lines)
-├── gguf.h                 # GGUF file parser header (96 lines)
-├── gguf.c                 # GGUF parser + F32/F16/Q4_0/Q5_0/Q8_0/Q4_K/Q6_K dequant (366 lines)
-├── Makefile               # build: CPU/GPU/inference/training/test
+├── notorch.h              # core API — tensors, autograd, optimizers, BPE, ops
+├── notorch.c              # core implementation (~2700 lines)
+├── notorch_vision.h       # image loading, transforms, ViT patches (stb_image)
+├── stb_image.h            # JPEG/PNG/BMP decoder (public domain)
+├── gguf.h                 # GGUF file parser header
+├── gguf.c                 # GGUF parser + F32/F16/Q4_0/Q5_0/Q8_0/Q4_K/Q6_K dequant
+├── Makefile               # build everything
+├── nanodurov.html         # browser chat with Arianna (JS inference, WebGPU ready)
+├── arianna_bpe_merges.txt # BPE tokenizer (1792 merges, vocab 2048)
 ├── examples/
-│   ├── infer_janus.c      # Janus RRPRAM inference (506 lines)
-│   ├── infer_gemma.c      # Gemma-3 inference via GGUF — GQA, KV cache (621 lines)
-│   ├── infer_llama.c      # LLaMA/Qwen/SmolLM2 inference via GGUF (366 lines)
-│   ├── train_q.c          # PostGPT-Q 1.65M training from scratch (370 lines)
-│   └── train_yent.c       # Yent 9.8M LLaMA training with checkpointing (372 lines)
+│   ├── infer_gemma.c      # Gemma-3 inference via GGUF — GQA, KV cache
+│   ├── infer_janus.c      # Janus RRPRAM inference
+│   ├── infer_llama.c      # LLaMA/Qwen/SmolLM2 inference via GGUF
+│   ├── infer_nanodurov.c  # nanodurov chat inference — BPE, KV cache, FP16
+│   ├── train_q.c          # PostGPT-Q 1.65M training from scratch
+│   ├── train_yent.c       # Yent 9.8M char-level training with checkpointing
+│   ├── train_dubrovsky.c  # Dubrovsky 9.5M GQA+RoPE training
+│   └── train_nanodurov.c  # nanodurov 15.7M BPE LLaMA training (Arianna voice)
 ├── tests/
-│   ├── test_notorch.c     # 47 tests, numerical gradient checks (1400 lines)
-│   └── test_gguf.c        # GGUF parser tests (39 lines)
+│   ├── test_notorch.c     # 47 tests, numerical gradient checks
+│   ├── test_gguf.c        # GGUF parser tests
+│   └── test_vision.c      # 48 vision + BPE tests
 ├── LICENSE                # LGPL-3.0
 └── README.md              # this. you survived. congratulations.
 ```
 
-total: **~7100 lines of C**. framework + GGUF + 3 inference engines + 2 training scripts + 47 tests. tested on 26+ real model files across 6 architectures (llama, gemma3, qwen2, janus, pitomadom, smollm2).
+total: **~9000 lines of C**. framework + vision + GGUF + BPE + 4 inference engines + 4 training scripts + 95 tests. tested on 26+ real model files across 6 architectures.
+
+### models trained on notorch
+
+| model | params | type | train loss | what |
+|-------|--------|------|-----------|------|
+| PostGPT-Q | 1.65M | char | 0.097 | resonant reasoning engine |
+| Dubrovsky | 9.5M | char (GQA+RoPE) | 0.026 | absurdist AI, coherent generation |
+| Yent | 9.8M | char | 1.77 | cynical AI character |
+| neovlm | 6.36M | dual (text+draw) | 0.0002 | Hebbian VLM, draws ASCII digits |
+| nanodurov | 15.7M | BPE 2048 (RoPE) | 0.022 | Arianna voice, philosophy |
+
+all trained from scratch on 8 GB Mac. no Python. no pip. Chuck optimizer.
 
 for reference, PyTorch's `torch/` directory alone is ~800,000 lines of Python, ~1,500,000 lines of C++, and an emotional support system for its build engineers. notorch is 0.15% of that. and it does everything you need to train a transformer.
 
@@ -503,17 +523,23 @@ for reference, PyTorch's `torch/` directory alone is ~800,000 lines of Python, ~
 
 ## tests
 
-the test suite is comprehensive and slightly unhinged:
+95 tests. 0 failures. the test suite is comprehensive and slightly unhinged:
 
-### unit tests
+### core tests (47)
 - tensor allocation, 2D creation, cloning, reshape, Xavier init
 - refcounting (increment, decrement, free-at-zero)
 - forward ops: SiLU, softmax, RMSNorm, LayerNorm, GELU
-- causal attention: verify first position attends only to itself
-- multi-head attention: correct output dimensionality
-- sequence cross-entropy: loss in expected range, gradients exist
-- dropout: ~50% zeroed in training, 0% in eval, correct scaling
-- save/load: roundtrip through binary format preserving shape and data
+- causal attention, multi-head attention, GQA attention
+- sequence cross-entropy, dropout, save/load roundtrip
+
+### vision + BPE tests (48)
+- image load (JPEG/PNG/BMP), grayscale, nonexistent file handling
+- bilinear resize (up/down/identity), center crop, overcrop clamping
+- normalize (mean/std), horizontal flip (double flip = identity)
+- grayscale conversion (RGB → luma)
+- ViT patch extraction (2x2, 4x4, full image)
+- ViT preprocess pipeline, gray preprocess pipeline
+- BPE encode/decode roundtrip, compression, empty input
 
 ### gradient checks
 every backward pass is verified against finite differences: `(f(x+h) - f(x-h)) / 2h`
