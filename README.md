@@ -127,16 +127,16 @@ nt_tensor — multidimensional arrays with refcounting
 │  Forward Operations (recorded on tape)           │
 │    ├─ nt_linear          (W @ x + b)             │
 │    ├─ nt_seq_linear      (batched W @ X)         │
-│    ├─ nt_embedding       (lookup table)           │
-│    ├─ nt_seq_embedding   (tokens + positions)     │
-│    ├─ nt_rmsnorm         (RMS normalization)      │
-│    ├─ nt_layernorm       (layer normalization)    │
-│    ├─ nt_causal_attention (single-head causal)    │
-│    ├─ nt_mh_causal_attention (multi-head)         │
-│    ├─ nt_silu / nt_gelu  (activations)            │
-│    ├─ nt_geglu           (Gemma-3 style FFN)      │
-│    ├─ nt_rope            (rotary embeddings)      │
-│    ├─ nt_dropout         (inverted dropout)       │
+│    ├─ nt_embedding       (lookup table)          │
+│    ├─ nt_seq_embedding   (tokens + positions)    │
+│    ├─ nt_rmsnorm         (RMS normalization)     │
+│    ├─ nt_layernorm       (layer normalization)   │
+│    ├─ nt_causal_attention (single-head causal)   │
+│    ├─ nt_mh_causal_attention (multi-head)        │
+│    ├─ nt_silu / nt_gelu  (activations)           │
+│    ├─ nt_geglu           (Gemma-3 style FFN)     │
+│    ├─ nt_rope            (rotary embeddings)     │
+│    ├─ nt_dropout         (inverted dropout)      │
 │    ├─ nt_softmax / nt_cross_entropy              │
 │    └─ nt_add / nt_mul / nt_scale                 │
 └──────────────────────────────────────────────────┘
@@ -144,10 +144,10 @@ nt_tensor — multidimensional arrays with refcounting
 nt_tape_backward() — reverse-mode automatic differentiation
     ↓
 ┌──────────────────────────────────────────────────┐
-│  Optimizers                                       │
-│    ├─ Adam               (the classic)            │
-│    ├─ AdamW              (with weight decay)      │
-│    └─ Chuck              (self-aware Adam)        │
+│  Optimizers                                      │
+│    ├─ Adam               (the classic)           │
+│    ├─ AdamW              (with weight decay)     │
+│    └─ Chuck              (self-aware Adam)       │
 └──────────────────────────────────────────────────┘
     ↓
 Your model is trained. in C. without Python. you are free.
