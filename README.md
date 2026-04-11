@@ -105,14 +105,12 @@ so here we are. **notorch**. everything you need. nothing you don't. no Python r
         ╚═══════════════════════════════════════════════════════╝
 ```
 
-look, pytorch isn't bad. it's genuinely brilliant engineering. i learned everything from it. i respect it deeply. but i also respect myself, and every time i type `import torch` on a machine with 8 GB of RAM, a small part of me dies.
-
-notorch isn't a pytorch replacement for everyone. it's a pytorch replacement for people who:
+notorch is for people who:
 - want to understand what's actually happening (all ~2500 lines of it)
 - want to train models on machines that aren't cloud instances
 - want compile times measured in milliseconds, not minutes
 - want to embed neural network inference in C/C++ applications without shipping half of Python
-- are certifiably insane (welcome, you're among friends)
+- refuse to accept 2.7 GB as the price of a matrix multiply
 
 ---
 
@@ -725,9 +723,7 @@ neural networks are not complicated. a linear layer is a matrix multiply. an act
 
 that's it. that's the whole field. everything else is optimization, infrastructure, and marketing.
 
-PyTorch, TensorFlow, JAX — they're brilliant pieces of engineering. but they solve the general case so aggressively that the simple case becomes absurdly complex. want to train a 2-layer model? same infrastructure as a 175B parameter model. same compilation times. same memory footprint. same existential weight.
-
-notorch solves the case that matters to me: training and running models in C, with minimal dependencies, maximal transparency, and the ability to embed in any application without shipping a Python runtime.
+notorch solves the case that matters: training and running models in C, with minimal dependencies, maximal transparency, and the ability to embed in any application without shipping a Python runtime.
 
 if you can read the code, you understand the framework. there's no magic. there's no hidden complexity. every gradient is hand-derived and verified against finite differences. every memory allocation has a corresponding free. every edge case is checked.
 
