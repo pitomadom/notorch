@@ -901,6 +901,90 @@ void nt_tape_backward(int loss_idx) {
             break;
         }
 
+        case NT_OP_RRPRAM_ATTN: {
+            if (e->parent1 >= 0 && e->parent2 >= 0 && e->parent3 >= 0) {
+                nt_tape_entry* pwr = &g_tape.entries[e->parent1];
+                nt_tape_entry* px  = &g_tape.entries[e->parent2];
+                nt_tape_entry* pv  = &g_tape.entries[e->parent3];
+                int T = (int)e->aux; int n_embd = (int)e->aux2;
+                int nr = (int)e->aux3; int hd = (int)e->aux4;
+                int out_dim = nr * hd;
+                int ctx = pwr->output->len / (nr * n_embd);
+                float* dwr = (float*)calloc(pwr->output->len, sizeof(float));
+                float* dx  = (float*)calloc(T * n_embd, sizeof(float));
+                float* dv  = (float*)calloc(T * out_dim, sizeof(float));
+                if (dwr && dx && dv) {
+                    for (int h = 0; h < nr; h++) {
+                        int wr_base = h * n_embd * ctx; int v_off = h * hd;
+                        for (int i = 0; i < T; i++) {
+                            float* xi = px->output->data + i * n_embd;
+                            float* dout_i = dout + i * out_dim + v_off;
+                            float* scores = (float*)calloc(i + 1, sizeof(float));
+                            float* attn = (float*)calloc(i + 1, sizeof(float));
+                            if (!scores || !attn) { free(scores); free(attn); continue; }
+                            float mx = -1e30f;
+                            for (int j = 0; j <= i; j++) {
+                                float dot = 0;
+                                for (int d = 0; d < n_embd; d++)
+                                    dot += xi[d] * pwr->output->data[wr_base + d * ctx + j];
+                                scores[j] = dot; if (dot > mx) mx = dot;
+                            }
+                            float sm = 0;
+                            for (int j = 0; j <= i; j++) { attn[j] = expf(scores[j] - mx); sm += attn[j]; }
+                            if (sm > 0) for (int j = 0; j <= i; j++) attn[j] /= sm;
+                            float* d_attn = (float*)calloc(i + 1, sizeof(float));
+                            if (d_attn) {
+                                for (int j = 0; j <= i; j++) {
+                                    float* vj = pv->output->data + j * out_dim + v_off;
+                                    for (int d = 0; d < hd; d++) d_attn[j] += dout_i[d] * vj[d];
+                                }
+                                for (int j = 0; j <= i; j++) {
+                                    float* dvj = dv + j * out_dim + v_off;
+                                    for (int d = 0; d < hd; d++) dvj[d] += attn[j] * dout_i[d];
+                                }
+                                float dot_da = 0;
+                                for (int j = 0; j <= i; j++) dot_da += d_attn[j] * attn[j];
+                                for (int j = 0; j <= i; j++) {
+                                    float ds = attn[j] * (d_attn[j] - dot_da);
+                                    for (int d = 0; d < n_embd; d++)
+                                        dx[i * n_embd + d] += ds * pwr->output->data[wr_base + d * ctx + j];
+                                    for (int d = 0; d < n_embd; d++)
+                                        dwr[wr_base + d * ctx + j] += ds * xi[d];
+                                }
+                            }
+                            free(scores); free(attn); free(d_attn);
+                        }
+                    }
+                    tape_acc_grad(e->parent1, dwr, pwr->output->len);
+                    tape_acc_grad(e->parent2, dx, T * n_embd);
+                    tape_acc_grad(e->parent3, dv, T * out_dim);
+                }
+                free(dwr); free(dx); free(dv);
+            }
+            break;
+        }
+
+        case NT_OP_CONCAT: {
+            if (e->parent1 >= 0 && e->parent2 >= 0) {
+                nt_tape_entry* pa = &g_tape.entries[e->parent1];
+                nt_tape_entry* pb = &g_tape.entries[e->parent2];
+                int T = (int)e->aux;
+                int Da = pa->output->len / T; int Db = pb->output->len / T; int Dc = Da + Db;
+                float* da = (float*)calloc(T * Da, sizeof(float));
+                float* db = (float*)calloc(T * Db, sizeof(float));
+                if (da && db) {
+                    for (int t = 0; t < T; t++) {
+                        for (int d = 0; d < Da; d++) da[t * Da + d] = dout[t * Dc + d];
+                        for (int d = 0; d < Db; d++) db[t * Db + d] = dout[t * Dc + Da + d];
+                    }
+                    tape_acc_grad(e->parent1, da, T * Da);
+                    tape_acc_grad(e->parent2, db, T * Db);
+                }
+                free(da); free(db);
+            }
+            break;
+        }
+
         case NT_OP_SEQ_CROSSENT: {
             if (e->parent1 >= 0) {
                 nt_tape_entry* pl = &g_tape.entries[e->parent1];
@@ -2025,6 +2109,65 @@ int nt_gqa_causal_attention(int q_idx, int k_idx, int v_idx, int T, int head_dim
     return idx;
 }
 
+int nt_rrpram_attention(int wr_idx, int x_idx, int v_idx, int T, int n_embd, int nr_heads, int head_dim) {
+    if (wr_idx < 0 || x_idx < 0 || v_idx < 0) return -1;
+    int out_dim = nr_heads * head_dim;
+    nt_tensor* out = nt_tensor_new(T * out_dim);
+    if (!out) return -1;
+    nt_tape_entry* pwr = &g_tape.entries[wr_idx];
+    nt_tape_entry* px  = &g_tape.entries[x_idx];
+    nt_tape_entry* pv  = &g_tape.entries[v_idx];
+    int ctx = pwr->output->len / (nr_heads * n_embd);
+    float* scores_buf = (float*)malloc(T * sizeof(float));
+    for (int h = 0; h < nr_heads; h++) {
+        int wr_base = h * n_embd * ctx;
+        int v_off = h * head_dim;
+        for (int i = 0; i < T; i++) {
+            float* xi = px->output->data + i * n_embd;
+            float mx = -1e30f;
+            for (int j = 0; j <= i; j++) {
+                float dot = 0;
+                for (int d = 0; d < n_embd; d++)
+                    dot += xi[d] * pwr->output->data[wr_base + d * ctx + j];
+                scores_buf[j] = dot;
+                if (dot > mx) mx = dot;
+            }
+            float sm = 0;
+            for (int j = 0; j <= i; j++) { scores_buf[j] = expf(scores_buf[j] - mx); sm += scores_buf[j]; }
+            if (sm > 0) for (int j = 0; j <= i; j++) scores_buf[j] /= sm;
+            float* oi = out->data + i * out_dim + v_off;
+            for (int d = 0; d < head_dim; d++) oi[d] = 0;
+            for (int j = 0; j <= i; j++) {
+                float* vj = pv->output->data + j * out_dim + v_off;
+                for (int d = 0; d < head_dim; d++) oi[d] += scores_buf[j] * vj[d];
+            }
+        }
+    }
+    free(scores_buf);
+    int idx = nt_tape_record4(out, NT_OP_RRPRAM_ATTN, wr_idx, x_idx, v_idx,
+                              (float)T, (float)n_embd, (float)nr_heads, (float)head_dim);
+    nt_tensor_free(out);
+    return idx;
+}
+
+int nt_concat(int a_idx, int b_idx, int T) {
+    if (a_idx < 0 || b_idx < 0) return -1;
+    nt_tape_entry* pa = &g_tape.entries[a_idx];
+    nt_tape_entry* pb = &g_tape.entries[b_idx];
+    int Da = pa->output->len / T;
+    int Db = pb->output->len / T;
+    int Dc = Da + Db;
+    nt_tensor* out = nt_tensor_new(T * Dc);
+    if (!out) return -1;
+    for (int t = 0; t < T; t++) {
+        for (int d = 0; d < Da; d++) out->data[t * Dc + d] = pa->output->data[t * Da + d];
+        for (int d = 0; d < Db; d++) out->data[t * Dc + Da + d] = pb->output->data[t * Db + d];
+    }
+    int idx = nt_tape_record(out, NT_OP_CONCAT, a_idx, b_idx, (float)T);
+    nt_tensor_free(out);
+    return idx;
+}
+
 int nt_cross_entropy(int logits_idx, int target) {
     if (logits_idx < 0) return -1;
     nt_tape_entry* pl = &g_tape.entries[logits_idx];
@@ -2620,3 +2763,35 @@ void nt_print_params(nt_tensor** params, int n, const char** names) {
 }
 
 /* BPE implementation is above, near dataloader */
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// BLAS — direct matmul API for inference engines
+// ═══════════════════════════════════════════════════════════════════════════════
+
+void nt_blas_mmT(float *C, const float *A, const float *BT, int m, int k, int n) {
+#ifdef USE_BLAS
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                m, n, k, 1.0f, A, k, BT, k, 0.0f, C, n);
+#else
+    for (int i = 0; i < m; i++)
+        for (int j = 0; j < n; j++) {
+            float s = 0;
+            for (int p = 0; p < k; p++) s += A[i*k+p] * BT[j*k+p];
+            C[i*n+j] = s;
+        }
+#endif
+}
+
+void nt_blas_mm(float *C, const float *A, const float *B, int m, int k, int n) {
+#ifdef USE_BLAS
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                m, n, k, 1.0f, A, k, B, n, 0.0f, C, n);
+#else
+    for (int i = 0; i < m; i++)
+        for (int j = 0; j < n; j++) {
+            float s = 0;
+            for (int p = 0; p < k; p++) s += A[i*k+p] * B[p*n+j];
+            C[i*n+j] = s;
+        }
+#endif
+}
