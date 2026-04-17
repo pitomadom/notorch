@@ -985,6 +985,56 @@ void nt_tape_backward(int loss_idx) {
             break;
         }
 
+        case NT_OP_SEQ_MATVEC_T: {
+            /* Y[t] = W^T @ X[t]. W[W_rows, W_cols], X[t] has W_rows elems, Y[t] has W_cols elems.
+             * dX[t][i] = sum_j dout[t][j] * W[i][j]  → dX[t] = W @ dout[t]
+             * dW[i][j] = sum_t dout[t][j] * X[t][i]  → dW = X^T @ dout
+             */
+            if (e->parent1 >= 0 && e->parent2 >= 0) {
+                nt_tape_entry* pw = &g_tape.entries[e->parent1];
+                nt_tape_entry* px = &g_tape.entries[e->parent2];
+                int T = (int)e->aux;
+                int W_rows = pw->output->shape[0];
+                int W_cols = pw->output->ndim >= 2 ? pw->output->shape[1] : pw->output->len / W_rows;
+                float* dw = (float*)calloc(pw->output->len, sizeof(float));
+                float* dx = (float*)calloc(px->output->len, sizeof(float));
+                if (dw && dx) {
+                    float* Wd = pw->output->data;
+                    float* Xd = px->output->data;
+#ifdef USE_BLAS
+                    /* dX[T, W_rows] = dout[T, W_cols] @ W^T[W_cols, W_rows] */
+                    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                                T, W_rows, W_cols,
+                                1.0f, dout, W_cols, Wd, W_cols,
+                                0.0f, dx, W_rows);
+                    /* dW[W_rows, W_cols] = X^T[W_rows, T] @ dout[T, W_cols] */
+                    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                                W_rows, W_cols, T,
+                                1.0f, Xd, W_rows, dout, W_cols,
+                                0.0f, dw, W_cols);
+#else
+                    for (int t = 0; t < T; t++) {
+                        float* dout_t = dout + t * W_cols;
+                        for (int i = 0; i < W_rows; i++)
+                            for (int j = 0; j < W_cols; j++)
+                                dx[t * W_rows + i] += Wd[i * W_cols + j] * dout_t[j];
+                    }
+                    for (int t = 0; t < T; t++) {
+                        float* dout_t = dout + t * W_cols;
+                        float* x_t = Xd + t * W_rows;
+                        for (int i = 0; i < W_rows; i++)
+                            for (int j = 0; j < W_cols; j++)
+                                dw[i * W_cols + j] += x_t[i] * dout_t[j];
+                    }
+#endif
+                    tape_acc_grad(e->parent1, dw, pw->output->len);
+                    tape_acc_grad(e->parent2, dx, px->output->len);
+                }
+                free(dw); free(dx);
+            }
+            break;
+        }
+
         case NT_OP_SEQ_CROSSENT: {
             if (e->parent1 >= 0) {
                 nt_tape_entry* pl = &g_tape.entries[e->parent1];
@@ -1864,6 +1914,45 @@ int nt_seq_linear(int w_idx, int x_idx, int T) {
 #endif
 
     int idx = nt_tape_record3(out, NT_OP_SEQ_MATVEC, w_idx, x_idx, -1, (float)T, 0);
+    nt_tensor_free(out);
+    return idx;
+}
+
+int nt_seq_linear_t(int w_idx, int x_idx, int T) {
+    if (w_idx < 0 || x_idx < 0 || T <= 0) return -1;
+    nt_tape_entry* pw = &g_tape.entries[w_idx];
+    nt_tape_entry* px = &g_tape.entries[x_idx];
+    int W_rows = pw->output->shape[0];
+    int W_cols = pw->output->ndim >= 2 ? pw->output->shape[1] : pw->output->len / W_rows;
+
+    /* W^T @ X[t]: input dim = W_rows, output dim = W_cols */
+    nt_tensor* out = nt_tensor_new(T * W_cols);
+    if (!out) return -1;
+
+    float* W = pw->output->data;
+    float* X = px->output->data;
+    float* Y = out->data;
+
+#ifdef USE_BLAS
+    /* Y[T, W_cols] = X[T, W_rows] @ W[W_rows, W_cols] */
+    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                T, W_cols, W_rows,
+                1.0f, X, W_rows, W, W_cols,
+                0.0f, Y, W_cols);
+#else
+    for (int t = 0; t < T; t++) {
+        float* x_t = X + t * W_rows;
+        float* y_t = Y + t * W_cols;
+        for (int j = 0; j < W_cols; j++) {
+            float s = 0;
+            for (int i = 0; i < W_rows; i++)
+                s += W[i * W_cols + j] * x_t[i];
+            y_t[j] = s;
+        }
+    }
+#endif
+
+    int idx = nt_tape_record3(out, NT_OP_SEQ_MATVEC_T, w_idx, x_idx, -1, (float)T, 0);
     nt_tensor_free(out);
     return idx;
 }

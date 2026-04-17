@@ -105,6 +105,7 @@ void nt_tensor_print(const nt_tensor* t, const char* name);
 #define NT_OP_GQA_ATTN       23   // grouped-query causal attention
 #define NT_OP_RRPRAM_ATTN    24   // RRPRAM positional attention (x @ Wr, causal)
 #define NT_OP_CONCAT         25   // concatenate two tensors per position
+#define NT_OP_SEQ_MATVEC_T  26   // Y[t] = W^T @ X[t] — transposed seq_linear for Janus Echo
 
 typedef struct {
     nt_tensor* output;          // forward result
@@ -291,6 +292,11 @@ int nt_linear(int w_idx, int x_idx, int bias_idx);
 
 // Sequence linear: Y[t] = W @ X[t] for t=0..T-1
 int nt_seq_linear(int w_idx, int x_idx, int T);
+
+// Transposed sequence linear: Y[t] = W^T @ X[t] — Janus Echo W^T·W
+// W is [rows, cols]. Computes Y[t] = W^T @ X[t] where X[t] has rows elements,
+// output Y[t] has cols elements. Same W, gradient flows through both passes.
+int nt_seq_linear_t(int w_idx, int x_idx, int T);
 
 // RMSNorm: y = x / rms(x) * gamma
 int nt_rmsnorm(int x_idx, int gamma_idx);
