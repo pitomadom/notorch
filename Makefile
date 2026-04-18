@@ -89,6 +89,31 @@ train_dubrovsky: examples/train_dubrovsky.c notorch.c notorch.h
 	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o train_dubrovsky examples/train_dubrovsky.c notorch.c -lm
 	@echo "Compiled: train_dubrovsky (Dubrovsky GQA+RoPE, $(BLAS_NAME))"
 
+# Janus Sonar training (triple attention: MHA + RRPRAM + Janus Echo)
+train_janus_sonar: examples/train_janus_sonar.c notorch.c notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o train_janus_sonar examples/train_janus_sonar.c notorch.c -lm
+	@echo "Compiled: train_janus_sonar (Janus triple attn 1.5M, $(BLAS_NAME))"
+
+# Janus Sonar inference
+infer_janus_sonar: examples/infer_janus_sonar.c notorch.c notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o infer_janus_sonar examples/infer_janus_sonar.c notorch.c -lm
+	@echo "Compiled: infer_janus_sonar ($(BLAS_NAME))"
+
+# DPO — Direct Preference Optimization (Rafailov 2023)
+train_dpo: examples/train_dpo.c notorch.c notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o train_dpo examples/train_dpo.c notorch.c -lm
+	@echo "Compiled: train_dpo (DPO alignment, $(BLAS_NAME))"
+
+# GRPO — Group Relative Policy Optimization (DeepSeek-R1)
+train_grpo: examples/train_grpo.c notorch.c notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o train_grpo examples/train_grpo.c notorch.c -lm
+	@echo "Compiled: train_grpo (GRPO self-play RL, $(BLAS_NAME))"
+
+# Knowledge Distillation (Hinton 2015)
+train_distillation: examples/train_distillation.c notorch.c notorch.h
+	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o train_distillation examples/train_distillation.c notorch.c -lm
+	@echo "Compiled: train_distillation (teacher→student KL, $(BLAS_NAME))"
+
 # Vision + BPE tests
 test_vision: tests/test_vision.c notorch.c notorch.h notorch_vision.h stb_image.h
 	$(CC) $(CFLAGS) $(BLAS_FLAGS) -o test_vision tests/test_vision.c notorch.c -lm
