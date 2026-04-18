@@ -1,0 +1,5 @@
+---
+triple:          'x86_64-apple-darwin'
+binary-path:     train_dubrovsky_dbg
+relocations:     []
+...

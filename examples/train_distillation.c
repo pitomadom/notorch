@@ -144,6 +144,13 @@ int main(int argc, char** argv) {
     printf("═══════════════════════════════════════════════════\n");
 
     /* TODO: load teacher + student, training loop with combined KL+CE loss */
+    (void)data_path; (void)teacher_path; (void)student_path;
+    (void)max_steps; (void)lr;
+
+    /* Stub: exercise kl_divergence to suppress warning */
+    float t_logits[4] = {1,2,3,4}, s_logits[4] = {4,3,2,1};
+    float kl = kl_divergence_softmax(t_logits, s_logits, 4, temp);
+    printf("  KL test: %.4f\n", kl);
 
     printf("\n  Distillation infrastructure ready.\n");
     printf("  Teacher inference + student training + KL divergence.\n");

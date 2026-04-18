@@ -202,11 +202,19 @@ int main(int argc, char** argv) {
 
     /* Load base model */
     Model* policy = model_new();
-    /* TODO: load weights, create ref, implement rollout+GRPO training loop */
+    Model* ref = model_clone(policy);
+    /* TODO: load weights from weights_path, implement rollout+GRPO training loop */
+
+    /* Stub: exercise helpers to suppress warnings */
+    float test_rewards[NUM_GENERATIONS], test_adv[NUM_GENERATIONS];
+    int test_tok[8] = {1,2,3,4,5,6,7,8};
+    test_rewards[0] = compute_reward(test_tok, 8);
+    compute_advantages(test_rewards, test_adv, 1);
+    (void)data_path; (void)max_steps; (void)lr;
 
     printf("\n  GRPO training infrastructure ready.\n");
     printf("  Rollout engine + policy gradient + advantage normalization.\n");
 
-    model_free(policy);
+    model_free(policy); model_free(ref);
     return 0;
 }

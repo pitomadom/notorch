@@ -1,21 +1,27 @@
 /*
- * train_janus_sonar.c — Janus triple attention on notorch, pure C.
+ * train_janus_sonar.c — Janus with TRUE DUAL WEIGHTS on notorch, pure C.
  *
- * Architecture (matches janus-bpe.c sonar-lite):
+ * Architecture (honest Janus v2):
  *   VOCAB 2048 BPE, CTX 128, DIM 128, HEADS 4, HEAD_DIM 32,
  *   LAYERS 4, HIDDEN 256, RoPE on QK, RMSNorm, SwiGLU FFN.
  *
- * Three attention branches per layer, blended equally:
+ * DUAL WEIGHTS per linear projection (wq, wk, wv, wvr, wj, wo):
+ *   W_eff · x = sigmoid(α) · (W_A · x) + (1 - sigmoid(α)) · (W_B · x)
+ *   where α is a learnable scalar per-linear, initialized at 0 (blend 0.5/0.5).
+ *   Uses nt_sigmoid and nt_scale_by_t (new notorch ops).
+ *   Identity: 1 - sigmoid(α) = sigmoid(-α), so (1-σ) flows through backward cleanly.
+ *
+ * Triple attention per layer (equal 1/3 blend for now — learnable gate[H,3] next round):
  *   a) MH causal (Q K V)              — semantic
  *   b) RRPRAM positional (Wr · x, Vr) — structural
- *   c) Janus echo MH (echo·echo·echo) — introspective self-resonance
- *      echo[t] = Wj^T · x[t]
+ *   c) Janus echo MH (echo·echo·echo) — introspective self-resonance, echo = Wj^T · x
  *
  * Dataset: /tmp/janus-sonar/janus_sonar_dataset.txt (241K, 16 voices).
  * Tokenizer: arianna_bpe_merges.txt (vocab 2048).
  *
  *   make train_janus_sonar
  *   ./train_janus_sonar [steps] [lr]
+ *   ./train_janus_sonar --resume [steps] [lr]
  */
 #include "notorch.h"
 #include <stdio.h>
@@ -35,29 +41,51 @@
 #define EVAL_SEQS   16
 #define CKPT_PREFIX "janus_sonar_ckpt"
 
+/* Dual weight projection: A, B matrices + scalar α */
+typedef struct {
+    nt_tensor *a, *b, *alpha;  /* a, b: [rows, cols]; alpha: [1] */
+} DualProj;
+
 typedef struct {
     nt_tensor *wte;                          /* [VOCAB, DIM] */
     struct {
         nt_tensor *rms1;                     /* [DIM] */
-        nt_tensor *wq, *wk, *wv, *wvr;       /* [DIM, DIM] */
-        nt_tensor *wj;                       /* [DIM, DIM] — Janus echo projector */
-        nt_tensor *wr;                       /* [NHEADS*DIM, CTX] — RRPRAM */
-        nt_tensor *wo;                       /* [DIM, DIM] */
-        nt_tensor *rms2;                     /* [DIM] */
-        nt_tensor *w_gate, *w_up;            /* [HIDDEN, DIM] */
-        nt_tensor *w_down;                   /* [DIM, HIDDEN] */
+        DualProj wq, wk, wv, wvr, wj, wo;    /* dual projections */
+        nt_tensor *wr;                       /* [NHEADS*DIM, CTX] — RRPRAM (single, positional) */
+        nt_tensor *rms2;
+        DualProj w_gate, w_up;               /* [HIDDEN, DIM] dual */
+        DualProj w_down;                     /* [DIM, HIDDEN] dual */
     } L[NLAYERS];
-    nt_tensor *rms_f;                        /* [DIM] */
-    nt_tensor *head;                         /* [VOCAB, DIM] */
+    nt_tensor *rms_f;
+    nt_tensor *head;
 } Model;
+
+static void dual_new(DualProj* d, int rows, int cols, int fan_in, int fan_out, float out_scale) {
+    d->a = nt_tensor_new2d(rows, cols); nt_tensor_xavier(d->a, fan_in, fan_out);
+    d->b = nt_tensor_new2d(rows, cols); nt_tensor_xavier(d->b, fan_in, fan_out);
+    if (out_scale != 1.0f) {
+        for (int i = 0; i < d->a->len; i++) d->a->data[i] *= out_scale;
+        for (int i = 0; i < d->b->len; i++) d->b->data[i] *= out_scale;
+    }
+    d->alpha = nt_tensor_new(1);
+    d->alpha->data[0] = 0.0f;  /* sigmoid(0) = 0.5 → balanced blend at start */
+}
+
+static void dual_free(DualProj* d) {
+    nt_tensor_free(d->a); nt_tensor_free(d->b); nt_tensor_free(d->alpha);
+}
 
 static long count_params(Model* m) {
     long n = m->wte->len + m->rms_f->len + m->head->len;
     for (int l = 0; l < NLAYERS; l++) {
-        n += m->L[l].rms1->len + m->L[l].rms2->len;
-        n += m->L[l].wq->len + m->L[l].wk->len + m->L[l].wv->len;
-        n += m->L[l].wvr->len + m->L[l].wj->len + m->L[l].wr->len + m->L[l].wo->len;
-        n += m->L[l].w_gate->len + m->L[l].w_up->len + m->L[l].w_down->len;
+        n += m->L[l].rms1->len + m->L[l].rms2->len + m->L[l].wr->len;
+        DualProj* projs[] = {
+            &m->L[l].wq, &m->L[l].wk, &m->L[l].wv,
+            &m->L[l].wvr, &m->L[l].wj, &m->L[l].wo,
+            &m->L[l].w_gate, &m->L[l].w_up, &m->L[l].w_down
+        };
+        for (int k = 0; k < 9; k++)
+            n += projs[k]->a->len + projs[k]->b->len + projs[k]->alpha->len;
     }
     return n;
 }
@@ -66,22 +94,22 @@ static Model* model_new(void) {
     Model* m = (Model*)calloc(1, sizeof(Model));
     m->wte = nt_tensor_new2d(VOCAB, DIM); nt_tensor_xavier(m->wte, VOCAB, DIM);
     float rs = 0.02f / sqrtf(2.0f * NLAYERS);
+    float out_scale_attn = rs / 0.1f;  /* apply to wo (output projection) */
+    float out_scale_ffn  = rs / 0.1f;  /* apply to w_down */
     for (int l = 0; l < NLAYERS; l++) {
         m->L[l].rms1 = nt_tensor_new(DIM); nt_tensor_fill(m->L[l].rms1, 1.0f);
-        m->L[l].wq  = nt_tensor_new2d(DIM, DIM); nt_tensor_xavier(m->L[l].wq,  DIM, DIM);
-        m->L[l].wk  = nt_tensor_new2d(DIM, DIM); nt_tensor_xavier(m->L[l].wk,  DIM, DIM);
-        m->L[l].wv  = nt_tensor_new2d(DIM, DIM); nt_tensor_xavier(m->L[l].wv,  DIM, DIM);
-        m->L[l].wvr = nt_tensor_new2d(DIM, DIM); nt_tensor_xavier(m->L[l].wvr, DIM, DIM);
-        m->L[l].wj  = nt_tensor_new2d(DIM, DIM); nt_tensor_xavier(m->L[l].wj,  DIM, DIM);
-        m->L[l].wr  = nt_tensor_new2d(NHEADS * DIM, CTX);
+        dual_new(&m->L[l].wq,  DIM, DIM, DIM, DIM, 1.0f);
+        dual_new(&m->L[l].wk,  DIM, DIM, DIM, DIM, 1.0f);
+        dual_new(&m->L[l].wv,  DIM, DIM, DIM, DIM, 1.0f);
+        dual_new(&m->L[l].wvr, DIM, DIM, DIM, DIM, 1.0f);
+        dual_new(&m->L[l].wj,  DIM, DIM, DIM, DIM, 1.0f);
+        dual_new(&m->L[l].wo,  DIM, DIM, DIM, DIM, out_scale_attn);
+        m->L[l].wr = nt_tensor_new2d(NHEADS * DIM, CTX);
         nt_tensor_xavier(m->L[l].wr, DIM, CTX);
-        m->L[l].wo  = nt_tensor_new2d(DIM, DIM); nt_tensor_xavier(m->L[l].wo,  DIM, DIM);
-        for (int i = 0; i < m->L[l].wo->len; i++) m->L[l].wo->data[i] *= rs / 0.1f;
         m->L[l].rms2 = nt_tensor_new(DIM); nt_tensor_fill(m->L[l].rms2, 1.0f);
-        m->L[l].w_gate = nt_tensor_new2d(HIDDEN, DIM); nt_tensor_xavier(m->L[l].w_gate, DIM, HIDDEN);
-        m->L[l].w_up   = nt_tensor_new2d(HIDDEN, DIM); nt_tensor_xavier(m->L[l].w_up,   DIM, HIDDEN);
-        m->L[l].w_down = nt_tensor_new2d(DIM, HIDDEN); nt_tensor_xavier(m->L[l].w_down, HIDDEN, DIM);
-        for (int i = 0; i < m->L[l].w_down->len; i++) m->L[l].w_down->data[i] *= rs / 0.1f;
+        dual_new(&m->L[l].w_gate, HIDDEN, DIM, DIM, HIDDEN, 1.0f);
+        dual_new(&m->L[l].w_up,   HIDDEN, DIM, DIM, HIDDEN, 1.0f);
+        dual_new(&m->L[l].w_down, DIM, HIDDEN, HIDDEN, DIM, out_scale_ffn);
     }
     m->rms_f = nt_tensor_new(DIM); nt_tensor_fill(m->rms_f, 1.0f);
     m->head = nt_tensor_new2d(VOCAB, DIM); nt_tensor_xavier(m->head, DIM, VOCAB);
@@ -92,19 +120,17 @@ static void model_free(Model* m) {
     nt_tensor_free(m->wte);
     for (int l = 0; l < NLAYERS; l++) {
         nt_tensor_free(m->L[l].rms1); nt_tensor_free(m->L[l].rms2);
-        nt_tensor_free(m->L[l].wq); nt_tensor_free(m->L[l].wk);
-        nt_tensor_free(m->L[l].wv); nt_tensor_free(m->L[l].wvr);
-        nt_tensor_free(m->L[l].wj); nt_tensor_free(m->L[l].wr);
-        nt_tensor_free(m->L[l].wo);
-        nt_tensor_free(m->L[l].w_gate); nt_tensor_free(m->L[l].w_up);
-        nt_tensor_free(m->L[l].w_down);
+        dual_free(&m->L[l].wq); dual_free(&m->L[l].wk); dual_free(&m->L[l].wv);
+        dual_free(&m->L[l].wvr); dual_free(&m->L[l].wj); dual_free(&m->L[l].wo);
+        nt_tensor_free(m->L[l].wr);
+        dual_free(&m->L[l].w_gate); dual_free(&m->L[l].w_up); dual_free(&m->L[l].w_down);
     }
     nt_tensor_free(m->rms_f); nt_tensor_free(m->head); free(m);
 }
 
 /* ── Save / Load ── */
-
-static int model_n_tensors(void) { return 1 + NLAYERS * 12 + 2; }
+/* 9 dual projections × 3 tensors + rms1, rms2, wr = 30 tensors per layer */
+static int model_n_tensors(void) { return 1 + NLAYERS * 30 + 2; }
 
 static nt_tensor** model_param_array(Model* m) {
     int n = model_n_tensors();
@@ -113,10 +139,19 @@ static nt_tensor** model_param_array(Model* m) {
     p[i++] = m->wte;
     for (int l = 0; l < NLAYERS; l++) {
         p[i++]=m->L[l].rms1;
-        p[i++]=m->L[l].wq;  p[i++]=m->L[l].wk; p[i++]=m->L[l].wv;
-        p[i++]=m->L[l].wvr; p[i++]=m->L[l].wj; p[i++]=m->L[l].wr;
-        p[i++]=m->L[l].wo;  p[i++]=m->L[l].rms2;
-        p[i++]=m->L[l].w_gate; p[i++]=m->L[l].w_up; p[i++]=m->L[l].w_down;
+        DualProj* projs[] = {
+            &m->L[l].wq, &m->L[l].wk, &m->L[l].wv,
+            &m->L[l].wvr, &m->L[l].wj, &m->L[l].wo
+        };
+        for (int k = 0; k < 6; k++) {
+            p[i++] = projs[k]->a; p[i++] = projs[k]->b; p[i++] = projs[k]->alpha;
+        }
+        p[i++] = m->L[l].wr;
+        p[i++] = m->L[l].rms2;
+        DualProj* ffn[] = { &m->L[l].w_gate, &m->L[l].w_up, &m->L[l].w_down };
+        for (int k = 0; k < 3; k++) {
+            p[i++] = ffn[k]->a; p[i++] = ffn[k]->b; p[i++] = ffn[k]->alpha;
+        }
     }
     p[i++] = m->rms_f; p[i++] = m->head;
     return p;
@@ -160,24 +195,59 @@ static int load_checkpoint(Model* m, float* best_loss) {
     return step;
 }
 
+/* ── Dual linear: blend via sigmoid(α)·(A·x) + sigmoid(-α)·(B·x) ── */
+/* For seq variant (T positions) */
+static int dual_seq_linear(int wa_i, int wb_i, int alpha_i, int x_i, int T) {
+    int alpha_neg  = nt_scale(alpha_i, -1.0f);
+    int sig_pos    = nt_sigmoid(alpha_i);
+    int sig_neg    = nt_sigmoid(alpha_neg);   /* = 1 - sig_pos */
+    int y_a        = nt_seq_linear(wa_i, x_i, T);
+    int y_b        = nt_seq_linear(wb_i, x_i, T);
+    int y_a_scaled = nt_scale_by_t(y_a, sig_pos);
+    int y_b_scaled = nt_scale_by_t(y_b, sig_neg);
+    return nt_add(y_a_scaled, y_b_scaled);
+}
+
+/* Same but using transposed seq_linear (W^T · x) — for Janus Echo */
+static int dual_seq_linear_t(int wa_i, int wb_i, int alpha_i, int x_i, int T) {
+    int alpha_neg  = nt_scale(alpha_i, -1.0f);
+    int sig_pos    = nt_sigmoid(alpha_i);
+    int sig_neg    = nt_sigmoid(alpha_neg);
+    int y_a        = nt_seq_linear_t(wa_i, x_i, T);
+    int y_b        = nt_seq_linear_t(wb_i, x_i, T);
+    int y_a_scaled = nt_scale_by_t(y_a, sig_pos);
+    int y_b_scaled = nt_scale_by_t(y_b, sig_neg);
+    return nt_add(y_a_scaled, y_b_scaled);
+}
+
+/* Record a DualProj and return tape indices (a_idx, b_idx, alpha_idx). */
+typedef struct { int a, b, alpha; } DualIdx;
+static DualIdx dual_record(DualProj* d) {
+    DualIdx r;
+    r.a     = nt_tape_param(d->a);
+    r.b     = nt_tape_param(d->b);
+    r.alpha = nt_tape_param(d->alpha);
+    return r;
+}
+
 /* ── Forward ── */
 
 static int forward(Model* m, int* tokens, int* targets) {
     int wte_i = nt_tape_param(m->wte); nt_tape_no_decay(wte_i);
-    int li[NLAYERS][12];
+    struct { int rms1; DualIdx wq, wk, wv, wvr, wj, wo; int wr, rms2; DualIdx w_gate, w_up, w_down; } li[NLAYERS];
     for (int l = 0; l < NLAYERS; l++) {
-        li[l][0] = nt_tape_param(m->L[l].rms1);
-        li[l][1] = nt_tape_param(m->L[l].wq);
-        li[l][2] = nt_tape_param(m->L[l].wk);
-        li[l][3] = nt_tape_param(m->L[l].wv);
-        li[l][4] = nt_tape_param(m->L[l].wvr);
-        li[l][5] = nt_tape_param(m->L[l].wj);
-        li[l][6] = nt_tape_param(m->L[l].wr);
-        li[l][7] = nt_tape_param(m->L[l].wo);
-        li[l][8] = nt_tape_param(m->L[l].rms2);
-        li[l][9] = nt_tape_param(m->L[l].w_gate);
-        li[l][10]= nt_tape_param(m->L[l].w_up);
-        li[l][11]= nt_tape_param(m->L[l].w_down);
+        li[l].rms1   = nt_tape_param(m->L[l].rms1);
+        li[l].wq     = dual_record(&m->L[l].wq);
+        li[l].wk     = dual_record(&m->L[l].wk);
+        li[l].wv     = dual_record(&m->L[l].wv);
+        li[l].wvr    = dual_record(&m->L[l].wvr);
+        li[l].wj     = dual_record(&m->L[l].wj);
+        li[l].wo     = dual_record(&m->L[l].wo);
+        li[l].wr     = nt_tape_param(m->L[l].wr);
+        li[l].rms2   = nt_tape_param(m->L[l].rms2);
+        li[l].w_gate = dual_record(&m->L[l].w_gate);
+        li[l].w_up   = dual_record(&m->L[l].w_up);
+        li[l].w_down = dual_record(&m->L[l].w_down);
     }
     int rmsf_i = nt_tape_param(m->rms_f);
     int head_i = nt_tape_param(m->head);
@@ -189,38 +259,36 @@ static int forward(Model* m, int* tokens, int* targets) {
     int tgt_i = nt_tape_record(tgt_t, NT_OP_NONE, -1, -1, 0);
     nt_tensor_free(tok_t); nt_tensor_free(tgt_t);
 
-    /* Token embedding only — RoPE handles position on Q/K */
     int h = nt_seq_embedding(wte_i, -1, tok_i, CTX, DIM);
 
     for (int l = 0; l < NLAYERS; l++) {
-        int xn = nt_seq_rmsnorm(h, li[l][0], CTX, DIM);
+        int xn = nt_seq_rmsnorm(h, li[l].rms1, CTX, DIM);
 
-        /* ── Triple attention branches ── */
-        int q   = nt_seq_linear(li[l][1], xn, CTX);
-        int k   = nt_seq_linear(li[l][2], xn, CTX);
-        int v   = nt_seq_linear(li[l][3], xn, CTX);
-        int vr  = nt_seq_linear(li[l][4], xn, CTX);
-        int ech = nt_seq_linear_t(li[l][5], xn, CTX);   /* echo = Wj^T x */
+        /* DUAL triple attention branches */
+        int q   = dual_seq_linear  (li[l].wq.a,  li[l].wq.b,  li[l].wq.alpha,  xn, CTX);
+        int k   = dual_seq_linear  (li[l].wk.a,  li[l].wk.b,  li[l].wk.alpha,  xn, CTX);
+        int v   = dual_seq_linear  (li[l].wv.a,  li[l].wv.b,  li[l].wv.alpha,  xn, CTX);
+        int vr  = dual_seq_linear  (li[l].wvr.a, li[l].wvr.b, li[l].wvr.alpha, xn, CTX);
+        int ech = dual_seq_linear_t(li[l].wj.a,  li[l].wj.b,  li[l].wj.alpha,  xn, CTX);
 
         q = nt_rope(q, CTX, HEAD_DIM);
         k = nt_rope(k, CTX, HEAD_DIM);
 
         int a_qkv = nt_mh_causal_attention(q, k, v, CTX, HEAD_DIM);
-        int a_rr  = nt_rrpram_attention(li[l][6], xn, vr, CTX, DIM, NHEADS, HEAD_DIM);
+        int a_rr  = nt_rrpram_attention(li[l].wr, xn, vr, CTX, DIM, NHEADS, HEAD_DIM);
         int a_j   = nt_mh_causal_attention(ech, ech, ech, CTX, HEAD_DIM);
 
-        /* Equal-weight blend (no learned gate — keep it honest for 1 attempt) */
         int blend = nt_add(nt_add(a_qkv, a_rr), a_j);
         blend = nt_scale(blend, 1.0f / 3.0f);
 
-        int proj = nt_seq_linear(li[l][7], blend, CTX);
+        int proj = dual_seq_linear(li[l].wo.a, li[l].wo.b, li[l].wo.alpha, blend, CTX);
         h = nt_add(h, proj);
 
-        /* SwiGLU FFN */
-        xn = nt_seq_rmsnorm(h, li[l][8], CTX, DIM);
-        int g = nt_silu(nt_seq_linear(li[l][9],  xn, CTX));
-        int u =         nt_seq_linear(li[l][10], xn, CTX);
-        int d =         nt_seq_linear(li[l][11], nt_mul(g, u), CTX);
+        /* Dual SwiGLU FFN */
+        xn = nt_seq_rmsnorm(h, li[l].rms2, CTX, DIM);
+        int g = nt_silu(dual_seq_linear(li[l].w_gate.a, li[l].w_gate.b, li[l].w_gate.alpha, xn, CTX));
+        int u =         dual_seq_linear(li[l].w_up.a,   li[l].w_up.b,   li[l].w_up.alpha,   xn, CTX);
+        int d =         dual_seq_linear(li[l].w_down.a, li[l].w_down.b, li[l].w_down.alpha, nt_mul(g, u), CTX);
         h = nt_add(h, d);
     }
 
@@ -251,6 +319,17 @@ static float eval_loss(Model* m, int* encoded, int n_tokens) {
 
 static double now_ms(void) { struct timeval tv; gettimeofday(&tv, NULL); return tv.tv_sec*1000.0+tv.tv_usec/1000.0; }
 
+/* Print a few α values so we can see dual weights learning */
+static void print_alphas(Model* m) {
+    printf("  α samples (sigmoid):\n");
+    for (int l = 0; l < NLAYERS; l++) {
+        float q = 1.0f / (1.0f + expf(-m->L[l].wq.alpha->data[0]));
+        float o = 1.0f / (1.0f + expf(-m->L[l].wo.alpha->data[0]));
+        float gt = 1.0f / (1.0f + expf(-m->L[l].w_gate.alpha->data[0]));
+        printf("    L%d  wq %.3f  wo %.3f  w_gate %.3f\n", l, q, o, gt);
+    }
+}
+
 int main(int argc, char** argv) {
     int resume = 0, ao = 1;
     if (argc > 1 && strcmp(argv[1], "--resume") == 0) { resume = 1; ao = 2; }
@@ -258,10 +337,11 @@ int main(int argc, char** argv) {
     float base_lr = (ao+1) < argc ? (float)atof(argv[ao+1]) : 3e-4f;
 
     printf("════════════════════════════════════════════════════════\n");
-    printf("  notorch — JANUS SONAR training (triple attention)\n");
+    printf("  notorch — JANUS SONAR DUAL training\n");
     printf("  DIM=%d L=%d H=%d HD=%d FFN=%d CTX=%d V=%d\n",
            DIM, NLAYERS, NHEADS, HEAD_DIM, HIDDEN, CTX, VOCAB);
-    printf("  MHA + RRPRAM + Janus Echo, RoPE, BPE 2048\n");
+    printf("  DUAL WEIGHTS: σ(α)·W_A + σ(−α)·W_B per linear\n");
+    printf("  Triple attn: MHA + RRPRAM + Janus Echo (equal 1/3 blend)\n");
     printf("  Chuck optimizer, %d steps, lr=%.1e\n", steps, base_lr);
     printf("════════════════════════════════════════════════════════\n");
 
@@ -280,15 +360,13 @@ int main(int argc, char** argv) {
     int* encoded = (int*)malloc(fsize * sizeof(int));
     int n_tokens = nt_bpe_encode(&bpe, raw, (int)fsize, encoded, (int)fsize);
     free(raw);
-    printf("corpus: %.1f KB → %d BPE tokens (%.2fx compression)\n",
-           fsize/1024.0, n_tokens, (float)fsize/n_tokens);
+    printf("corpus: %.1f KB → %d BPE tokens\n", fsize/1024.0, n_tokens);
 
     nt_seed(42);
     Model* model = model_new();
     long np = count_params(model);
-    printf("model: %ld params (%.2f MB)\n", np, np*4.0f/1048576.0f);
-    printf("karpathy: %.0fK tokens, %.1fM params → %.1f epochs over %d steps\n",
-           n_tokens/1000.0, np/1.0e6, (float)steps * CTX / n_tokens, steps);
+    printf("model: %ld params (%.2f MB) — dual weights, ~2× single\n", np, np*4.0f/1048576.0f);
+    printf("karpathy: %.1f epochs over %d steps\n", (float)steps * CTX / n_tokens, steps);
 
     float best_loss = 99.0f;
     if (resume) {
@@ -330,7 +408,8 @@ int main(int argc, char** argv) {
 
         if ((step+1) % CKPT_EVERY == 0) {
             float val = eval_loss(model, encoded, n_tokens);
-            printf("  ──── ckpt %d | val %.4f | saving\n", step+1, val);
+            printf("  ──── ckpt %d | val %.4f\n", step+1, val);
+            print_alphas(model);
             save_checkpoint(model, step+1, best_loss);
             fflush(stdout);
         }
@@ -344,43 +423,7 @@ int main(int argc, char** argv) {
     printf("  val:   %.4f\n", final_val);
     printf("  time:  %.0fs (%.1f min) | %.2f steps/s\n", total_s, total_s/60.0, steps/total_s);
     printf("  nans:  %d\n", guard.total_nan_count);
-
-    /* ── Generation sample ── */
-    printf("\n── generation (temp=0.8) ──\n");
-    nt_train_mode(0);
-    const char* prompts[] = {
-        "Q: What does Janus feel?\nA:",
-        "The haze is",
-        "Lab 7. Observation window"
-    };
-    for (int p = 0; p < 3; p++) {
-        int ctx_tokens[CTX];
-        int gen_len = nt_bpe_encode(&bpe, prompts[p], (int)strlen(prompts[p]), ctx_tokens, CTX/2);
-        printf("\n[prompt %d] %s", p, prompts[p]);
-        for (int s = 0; s < 80; s++) {
-            int toks[CTX], tgts[CTX];
-            for (int i = 0; i < gen_len; i++) toks[i] = ctx_tokens[i];
-            for (int i = gen_len; i < CTX; i++) toks[i] = 0;
-            memset(tgts, 0, sizeof(tgts));
-            nt_tape_start();
-            int loss_idx = forward(model, toks, tgts);
-            nt_tape* tape = nt_tape_get();
-            int logits_idx = tape->entries[loss_idx].parent1;
-            float* last = tape->entries[logits_idx].output->data + (gen_len-1)*VOCAB;
-            for (int i = 0; i < VOCAB; i++) last[i] /= 0.8f;
-            float mx = last[0]; for (int i=1;i<VOCAB;i++) if(last[i]>mx) mx=last[i];
-            float sm = 0; for (int i=0;i<VOCAB;i++) { last[i]=expf(last[i]-mx); sm+=last[i]; }
-            for (int i=0;i<VOCAB;i++) last[i]/=sm;
-            float r=(float)rand()/(float)RAND_MAX, cum=0; int next=0;
-            for (int i=0;i<VOCAB;i++) { cum+=last[i]; if(cum>=r){next=i;break;} }
-            char decoded[NT_BPE_MAX_TOKEN_LEN + 1];
-            int db = nt_bpe_decode(&bpe, &next, 1, decoded, NT_BPE_MAX_TOKEN_LEN);
-            if (db > 0) { decoded[db] = 0; printf("%s", decoded); fflush(stdout); }
-            if (gen_len < CTX - 1) ctx_tokens[gen_len++] = next; else break;
-            nt_tape_clear();
-        }
-        printf("\n");
-    }
+    print_alphas(model);
 
     printf("\n── saving ──\n");
     save_model(model, "janus_sonar");
@@ -389,7 +432,7 @@ int main(int argc, char** argv) {
 
     model_free(model); free(encoded);
     printf("\n════════════════════════════════════════════════════════\n");
-    printf("  Janus Sonar trained. %d steps. Triple attention. Pure C.\n", steps);
+    printf("  Janus Sonar DUAL trained. %d steps. Pure C. No PyTorch.\n", steps);
     printf("════════════════════════════════════════════════════════\n");
     return 0;
 }

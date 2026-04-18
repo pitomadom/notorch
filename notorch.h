@@ -106,6 +106,8 @@ void nt_tensor_print(const nt_tensor* t, const char* name);
 #define NT_OP_RRPRAM_ATTN    24   // RRPRAM positional attention (x @ Wr, causal)
 #define NT_OP_CONCAT         25   // concatenate two tensors per position
 #define NT_OP_SEQ_MATVEC_T  26   // Y[t] = W^T @ X[t] — transposed seq_linear for Janus Echo
+#define NT_OP_SIGMOID       27   // y = 1 / (1 + exp(-x)) — logistic activation
+#define NT_OP_SCALE_BY_T    28   // y[i] = a[0] * x[i], a is scalar tensor [1]
 
 typedef struct {
     nt_tensor* output;          // forward result
@@ -306,6 +308,13 @@ int nt_seq_rmsnorm(int x_idx, int gamma_idx, int T, int D);
 
 // SiLU activation: y = x * sigmoid(x)
 int nt_silu(int x_idx);
+
+// Sigmoid activation: y = 1 / (1 + exp(-x))
+int nt_sigmoid(int x_idx);
+
+// Broadcast scale: y[i] = a[0] * x[i], where a is a scalar tensor (shape [1]).
+// Grad flows to both x (gx = a*gy) and a (ga = sum(gy*x)).
+int nt_scale_by_t(int x_idx, int a_idx);
 
 // GEGLU: y = GELU(x @ W1) * (x @ W2) — Gemma-3 style FFN
 int nt_geglu(int x_idx, int w1_idx, int w2_idx, int T, int D_in, int D_out);

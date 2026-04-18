@@ -456,6 +456,42 @@ void nt_tape_backward(int loss_idx) {
             break;
         }
 
+        case NT_OP_SIGMOID: {
+            /* y = sigmoid(x); dy/dx = y * (1 - y) */
+            if (e->parent1 >= 0) {
+                float* gx = (float*)calloc(out_len, sizeof(float));
+                if (gx) {
+                    for (int i = 0; i < out_len; i++) {
+                        float y = e->output->data[i];
+                        gx[i] = dout[i] * y * (1.0f - y);
+                    }
+                    tape_acc_grad(e->parent1, gx, out_len);
+                }
+                free(gx);
+            }
+            break;
+        }
+
+        case NT_OP_SCALE_BY_T: {
+            /* y = a[0] * x; gx = a[0] * dout; ga = sum(dout * x) */
+            if (e->parent1 >= 0 && e->parent2 >= 0) {
+                nt_tape_entry* px = &g_tape.entries[e->parent1];
+                nt_tape_entry* pa = &g_tape.entries[e->parent2];
+                float a_val = pa->output->data[0];
+                float* gx = (float*)calloc(out_len, sizeof(float));
+                if (gx) {
+                    for (int i = 0; i < out_len; i++) gx[i] = a_val * dout[i];
+                    tape_acc_grad(e->parent1, gx, out_len);
+                    free(gx);
+                }
+                float ga = 0;
+                for (int i = 0; i < out_len; i++) ga += dout[i] * px->output->data[i];
+                float ga_buf[1] = { ga };
+                tape_acc_grad(e->parent2, ga_buf, 1);
+            }
+            break;
+        }
+
         case NT_OP_SOFTMAX: {
             if (e->parent1 >= 0) {
                 float dot_dy = 0;
@@ -2021,6 +2057,38 @@ int nt_silu(int x_idx) {
         out->data[i] = x / (1.0f + expf(-x));
     }
     int idx = nt_tape_record(out, NT_OP_SILU, x_idx, -1, 0);
+    nt_tensor_free(out);
+    return idx;
+}
+
+int nt_sigmoid(int x_idx) {
+    if (x_idx < 0) return -1;
+    nt_tape_entry* px = &g_tape.entries[x_idx];
+    int n = px->output->len;
+    nt_tensor* out = nt_tensor_new(n);
+    if (!out) return -1;
+    for (int i = 0; i < n; i++) {
+        float x = px->output->data[i];
+        /* numerically stable */
+        out->data[i] = (x >= 0) ? 1.0f / (1.0f + expf(-x))
+                                : expf(x) / (1.0f + expf(x));
+    }
+    int idx = nt_tape_record(out, NT_OP_SIGMOID, x_idx, -1, 0);
+    nt_tensor_free(out);
+    return idx;
+}
+
+int nt_scale_by_t(int x_idx, int a_idx) {
+    if (x_idx < 0 || a_idx < 0) return -1;
+    nt_tape_entry* px = &g_tape.entries[x_idx];
+    nt_tape_entry* pa = &g_tape.entries[a_idx];
+    if (pa->output->len != 1) return -1;  /* scalar required */
+    int n = px->output->len;
+    nt_tensor* out = nt_tensor_new(n);
+    if (!out) return -1;
+    float a_val = pa->output->data[0];
+    for (int i = 0; i < n; i++) out->data[i] = a_val * px->output->data[i];
+    int idx = nt_tape_record3(out, NT_OP_SCALE_BY_T, x_idx, a_idx, -1, 0, 0);
     nt_tensor_free(out);
     return idx;
 }

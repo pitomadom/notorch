@@ -37,13 +37,8 @@
 static char vocab_chars[VOCAB];
 static int  char_to_id[256];
 
-/* Multi-byte UTF-8 chars mapped to single IDs */
-static const unsigned char utf8_times[]  = {0xC3, 0x97, 0};  /* × */
-static const unsigned char utf8_agrave[] = {0xC3, 0xA0, 0};  /* à */
-static const unsigned char utf8_eacute[] = {0xC3, 0xA9, 0};  /* é */
-static const unsigned char utf8_ouml[]   = {0xC3, 0xB6, 0};  /* ö */
-static const unsigned char utf8_emdash[] = {0xE2, 0x80, 0x94, 0}; /* — */
-static const unsigned char utf8_tm[]     = {0xE2, 0x84, 0xA2, 0}; /* ™ */
+/* Multi-byte UTF-8 decode sequences for special chars (ids 82-87) */
+static const char* utf8_decode[] = {"×", "à", "é", "ö", "—", "™"};
 
 static void init_vocab(void) {
     memset(char_to_id, -1, sizeof(char_to_id));
@@ -58,14 +53,11 @@ static void init_vocab(void) {
         char_to_id[(unsigned char)ascii_order[i]] = idx;
         idx++;
     }
-    /* UTF-8 special chars: ids 82-87, map first byte for decode */
-    /* For encoding, we handle these in encode_text() below */
-    vocab_chars[82] = '*'; /* placeholder for × */
-    vocab_chars[83] = 'a'; /* placeholder for à */
-    vocab_chars[84] = 'e'; /* placeholder for é */
-    vocab_chars[85] = 'o'; /* placeholder for ö */
-    vocab_chars[86] = '-'; /* placeholder for — */
-    vocab_chars[87] = 'T'; /* placeholder for ™ */
+    /* UTF-8 special chars: ids 82-87
+     * For decode, use utf8_decode[] array above.
+     * vocab_chars[] stores first ASCII byte as fallback. */
+    vocab_chars[82] = '*'; vocab_chars[83] = 'a'; vocab_chars[84] = 'e';
+    vocab_chars[85] = 'o'; vocab_chars[86] = '-'; vocab_chars[87] = 'T';
 }
 
 /* Encode a byte from the dataset, handling UTF-8 multi-byte */
@@ -315,7 +307,7 @@ int main(int argc, char** argv) {
     printf("════════════════════════════════════════════════════════\n");
 
     /* Load and encode data */
-    const char* path = "/Users/ataeff/Downloads/dubrovsky.txt";
+    const char* path = argc > 1 ? argv[1] : "dubrovsky.txt";
     FILE* f = fopen(path, "rb");
     if (!f) { printf("cannot open %s\n", path); return 1; }
     fseek(f, 0, SEEK_END); long fsize = ftell(f); fseek(f, 0, SEEK_SET);

@@ -153,6 +153,8 @@ static int forward_on_tape(Model* m, int* tok, int* tgt, int T) {
     for (int t = 0; t < T; t++) { tok_t->data[t] = (float)tok[t]; tgt_t->data[t] = (float)tgt[t]; }
     int tok_idx = nt_tape_record(tok_t, 0, -1, -1, 0);
     int tgt_idx = nt_tape_record(tgt_t, 0, -1, -1, 0);
+    nt_tensor_free(tok_t);
+    nt_tensor_free(tgt_t);
 
     int pi = 0;
     int h = nt_seq_embedding(pi_ids[pi++], -1, tok_idx, T, DIM);

@@ -218,7 +218,7 @@ int main(int argc, char** argv) {
     int resume = 0;
     int arg_off = 1;
     if (argc > 1 && strcmp(argv[1], "--resume") == 0) { resume = 1; arg_off = 2; }
-    int steps = arg_off < argc ? atoi(argv[arg_off]) : 30000;
+    int steps = arg_off < argc ? atoi(argv[arg_off]) : 15000;
     float base_lr = (arg_off+1) < argc ? (float)atof(argv[arg_off+1]) : 3e-4f;
 
     printf("════════════════════════════════════════════════════════\n");
@@ -229,7 +229,7 @@ int main(int argc, char** argv) {
     printf("  checkpoint every %d steps\n", CKPT_EVERY);
     printf("════════════════════════════════════════════════════════\n");
 
-    const char* path = "/Users/ataeff/Downloads/yent-datasets/yent_v11_en_final.txt";
+    const char* path = "/Users/ataeff/Downloads/arianna_dataset_final_clean.txt";
     FILE* f = fopen(path, "rb");
     if (!f) { printf("cannot open %s\n", path); return 1; }
     fseek(f, 0, SEEK_END); long fsize = ftell(f); fseek(f, 0, SEEK_SET);
